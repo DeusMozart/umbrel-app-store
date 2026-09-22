@@ -1,0 +1,31 @@
+manifestVersion: 1
+id: mozart-ups-monitor
+category: networking
+name: UPS Monitor
+version: "1.0.0"
+tagline: Live UPS status — battery, load, runtime
+description: >-
+  A live dashboard for your USB-connected UPS, running right on your Umbrel.
+
+  UPS Monitor runs Network UPS Tools (NUT) with the usbhid-ups driver and pairs it with PeaNUT — a small web dashboard showing battery charge, estimated runtime, load, voltages and power events in real time.
+
+  Preconfigured for the CyberPower VP1200ELCD; other NUT-supported USB HID UPS models will generally work as-is.
+
+  No login required. Keep it on your local network.
+developer: DeusMozart
+website: https://github.com/DeusMozart/umbrel-app-store
+submitter: DeusMozart
+submission: https://github.com/DeusMozart/umbrel-app-store
+repo: https://github.com/DeusMozart/umbrel-app-store
+support: https://github.com/DeusMozart/umbrel-app-store/issues
+gallery: []
+releaseNotes: >-
+  First release: NUT server (usbhid-ups) + PeaNUT dashboard, preconfigured for the CyberPower VP1200ELCD.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+port: 8080
+icon: https://raw.githubusercontent.com/DeusMozart/umbrel-app-store/main/mozart-ups-monitor/icon.svg
+storage:
+  dataRoot: data
