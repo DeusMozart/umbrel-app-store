@@ -9,7 +9,7 @@ services:
 
   # OpenMuse: API server + web UI + same-origin proxy in one container.
   openmuse:
-    image: ghcr.io/deusmozart/openmuse:1.0.1
+    image: ghcr.io/deusmozart/openmuse:1.0.2
     restart: unless-stopped
     init: true
     volumes:

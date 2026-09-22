@@ -2,7 +2,7 @@ manifestVersion: 1
 id: mozart-openmuse
 category: ai
 name: OpenMuse
-version: "1.0.1"
+version: "1.0.2"
 tagline: A personal agent with a browser, terminal, and files
 description: >-
   OpenMuse is a personal-agent app: ask for an outcome, follow the plan, review the actions, and come back to the result.
@@ -20,7 +20,7 @@ repo: https://github.com/DeusMozart/umbrel-app-store
 support: https://github.com/DeusMozart/umbrel-app-store/issues
 gallery: []
 releaseNotes: >-
-  1.0.1: fixes browser-worker profile directory ownership so browser sessions open reliably on umbrelOS.
+  1.0.2: browser-worker profile directory ownership fix (worker user is uid 1001).
 dependencies: []
 path: ""
 defaultUsername: ""
