@@ -4,7 +4,7 @@ These files build the two container images used by the `mozart-openmuse` umbrelO
 
 | Image | Built from | Dockerfile |
 | --- | --- | --- |
-| `ghcr.io/deusmozart/openmuse:1.0.0` | CopilotKit/openmuse checkout | `Dockerfile.openmuse` |
+| `ghcr.io/deusmozart/openmuse:1.0.1` | CopilotKit/openmuse checkout | `Dockerfile.openmuse` |
 | `ghcr.io/deusmozart/openmuse-browser-worker:1.0.0` | CopilotKit/openmuse `apps/worker` | upstream `apps/worker/Dockerfile` |
 
 Both are built by `.github/workflows/build-openmuse.yml`, pinned to upstream commit
@@ -17,6 +17,9 @@ Both are built by `.github/workflows/build-openmuse.yml`, pinned to upstream com
   reverse-proxies `/api/*` to the loopback API, so the whole app is same-origin.
 - The web bundle is built with `EXPO_PUBLIC_API_URL=/` so browser calls are relative
   and work on any hostname/port the app is exposed on.
+- The entrypoint chowns the shared `browser-profiles` bind mount (from the app data
+  dir) to uid 1000, because the browser worker runs as `pwuser` while umbrel creates
+  bind-mounted app data as root.
 
 ## Updating to a newer upstream commit
 

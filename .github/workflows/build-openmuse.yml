@@ -21,9 +21,11 @@ jobs:
           - name: openmuse
             context: ./src
             file: ./mozart-openmuse/docker/Dockerfile.openmuse
+            tag: "1.0.1"
           - name: openmuse-browser-worker
             context: ./src/apps/worker
             file: ./src/apps/worker/Dockerfile
+            tag: "1.0.0"
     steps:
       - name: Checkout store repo
         uses: actions/checkout@v4
@@ -53,6 +55,6 @@ jobs:
           file: ${{ matrix.file }}
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/deusmozart/${{ matrix.name }}:1.0.0
+          tags: ghcr.io/deusmozart/${{ matrix.name }}:${{ matrix.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

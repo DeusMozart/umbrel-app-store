@@ -9,11 +9,13 @@ services:
 
   # OpenMuse: API server + web UI + same-origin proxy in one container.
   openmuse:
-    image: ghcr.io/deusmozart/openmuse:1.0.0
+    image: ghcr.io/deusmozart/openmuse:1.0.1
     restart: unless-stopped
     init: true
     volumes:
       - ${APP_DATA_DIR}/data/openmuse:/data
+      # Shared with the browser worker so the entrypoint can fix its ownership.
+      - ${APP_DATA_DIR}/data/browser-profiles:/browser-profiles
     environment:
       - WORKSPACE_MODE=sample
       - AGENT_BACKEND=sample
