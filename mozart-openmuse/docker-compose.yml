@@ -1,0 +1,43 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      # Format: <app-id>_<docker-service-name>_1
+      APP_HOST: mozart-openmuse_openmuse_1
+      APP_PORT: 8080
+
+  # OpenMuse: API server + web UI + same-origin proxy in one container.
+  openmuse:
+    image: ghcr.io/deusmozart/openmuse:1.0.0
+    restart: unless-stopped
+    init: true
+    volumes:
+      - ${APP_DATA_DIR}/data/openmuse:/data
+    environment:
+      - WORKSPACE_MODE=sample
+      - AGENT_BACKEND=sample
+      # If the app's external port differs, adjust PUBLIC_API_URL and ALLOWED_ORIGINS in the app settings.
+      - PUBLIC_API_URL=http://umbrel.local:8093
+      - ALLOWED_ORIGINS=http://umbrel.local:8093
+      - BROWSER_WORKER_URL=http://browser-worker:8790
+      - WORKER_TOKEN=${APP_SEED}
+
+  # Playwright browser worker with persistent Chromium profiles.
+  browser-worker:
+    image: ghcr.io/deusmozart/openmuse-browser-worker:1.0.0
+    restart: unless-stopped
+    init: true
+    environment:
+      - WORKER_HOST=0.0.0.0
+      - WORKER_TOKEN=${APP_SEED}
+    volumes:
+      - ${APP_DATA_DIR}/data/browser-profiles:/data
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    shm_size: 256mb
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

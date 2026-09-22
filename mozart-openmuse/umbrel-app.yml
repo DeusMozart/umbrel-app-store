@@ -1,0 +1,31 @@
+manifestVersion: 1
+id: mozart-openmuse
+category: ai
+name: OpenMuse
+version: "1.0.0"
+tagline: A personal agent with a browser, terminal, and files
+description: >-
+  OpenMuse is a personal-agent app: ask for an outcome, follow the plan, review the actions, and come back to the result.
+
+  It runs its own server, task worker, and a Playwright browser worker with persistent Chromium profiles — so the agent can browse real pages, show its work inline, and hand a live browser session back to you with "Take control".
+
+  This build runs in sample mode out of the box (fictional data, no model key needed). Add a model provider key in the app settings to enable the real agent; connect Google later for live mail and calendar.
+
+  Alpha software, self-hosted. Based on CopilotKit OpenMuse (MIT), pinned to commit ef8f608.
+developer: DeusMozart
+website: https://github.com/CopilotKit/openmuse
+submitter: DeusMozart
+submission: https://github.com/DeusMozart/umbrel-app-store
+repo: https://github.com/DeusMozart/umbrel-app-store
+support: https://github.com/DeusMozart/umbrel-app-store/issues
+gallery: []
+releaseNotes: >-
+  First release: OpenMuse alpha (pinned ef8f608) with the Playwright browser worker; sample mode out of the box.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+port: 8093
+icon: https://raw.githubusercontent.com/DeusMozart/umbrel-app-store/main/mozart-openmuse/icon.svg
+storage:
+  dataRoot: data

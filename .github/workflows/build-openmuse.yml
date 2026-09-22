@@ -1,0 +1,58 @@
+name: Build OpenMuse images
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "mozart-openmuse/docker/**"
+      - ".github/workflows/build-openmuse.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: openmuse
+            context: ./src
+            file: ./mozart-openmuse/docker/Dockerfile.openmuse
+          - name: openmuse-browser-worker
+            context: ./src/apps/worker
+            file: ./src/apps/worker/Dockerfile
+    steps:
+      - name: Checkout store repo
+        uses: actions/checkout@v4
+      - name: Checkout OpenMuse (pinned commit)
+        uses: actions/checkout@v4
+        with:
+          repository: CopilotKit/openmuse
+          ref: ef8f608bb0305ff97114983de5c9db7ebcd816e2
+          path: src
+      - name: Prepare openmuse build context
+        if: matrix.name == 'openmuse'
+        run: |
+          cp -r mozart-openmuse/docker src/.openmuse-docker
+          echo ".git" > src/.dockerignore
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/deusmozart/${{ matrix.name }}:1.0.0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

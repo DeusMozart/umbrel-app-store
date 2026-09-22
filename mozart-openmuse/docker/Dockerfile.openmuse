@@ -1,0 +1,28 @@
+# Combined OpenMuse image:
+#   - OpenMuse API server on 127.0.0.1:8787 (sample mode requires a loopback bind)
+#   - Static Expo web build + same-origin /api reverse proxy on 0.0.0.0:8080
+#
+# Build context: a checkout of https://github.com/CopilotKit/openmuse at the pinned commit,
+# with this docker/ folder copied to .openmuse-docker/ inside the context (see the workflow).
+
+FROM node:24-bookworm-slim AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm@11.19.0
+WORKDIR /app
+COPY . .
+RUN pnpm install --frozen-lockfile
+RUN pnpm build:server
+# Bake a relative API URL into the web bundle: the browser calls /api/* on its own origin.
+RUN CI=1 EXPO_NO_TELEMETRY=1 EXPO_PUBLIC_API_URL=/ pnpm build:web
+
+FROM node:24-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /app /app
+COPY .openmuse-docker/proxy.mjs /opt/proxy.mjs
+COPY .openmuse-docker/entrypoint.sh /opt/entrypoint.sh
+RUN chmod +x /opt/entrypoint.sh
+EXPOSE 8080
+ENTRYPOINT ["/opt/entrypoint.sh"]
