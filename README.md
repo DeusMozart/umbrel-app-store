@@ -16,6 +16,12 @@ A personal agent with a browser, terminal, and files — [CopilotKit OpenMuse](h
 
 Ships in sample mode (fictional data, no model key needed); add a model provider key to enable the real agent. Images are built by this repo's GitHub Actions from upstream commit `ef8f608` — see `mozart-openmuse/docker/README.md`.
 
+### WP Sandbox
+
+A self-contained WordPress site (WordPress 7.1.2 + MariaDB 11.5) for hosting local copies of websites on your Umbrel — backups, staging and testing.
+
+Self-installing on first boot: it creates its database, admin account and permalinks, then prints a one-time magic sign-in link into its logs. A bundled WP-CLI companion service handles in-app maintenance, and the optional **Backups Folder** mount gives the app read-only access to a folder on your Umbrel for importing backups.
+
 ## Install
 
 1. Open **App Store** on your Umbrel

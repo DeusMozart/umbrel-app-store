@@ -1,0 +1,37 @@
+manifestVersion: 1.1
+id: mozart-wp-sandbox
+category: social
+name: WP Sandbox
+version: "1.0.0"
+tagline: Local WordPress site for backups, staging & testing
+description: >-
+  A self-contained WordPress site (WordPress 7.1.2 + MariaDB 11.5) made for hosting local copies of websites on your Umbrel.
+
+  On first boot it installs itself — database, admin account, permalinks — and prints a one-time magic sign-in link into its logs. No passwords to remember; fresh sign-in links can be generated any time.
+
+  A bundled WP-CLI companion service (Settings → Open terminal → cli) lets you run wp commands inside the site, and the optional Backups folder mount gives read-only access to a folder on the Umbrel for importing backups.
+developer: DeusMozart
+website: https://github.com/DeusMozart/umbrel-app-store
+submitter: DeusMozart
+submission: https://github.com/DeusMozart/umbrel-app-store
+repo: https://github.com/DeusMozart/umbrel-app-store
+support: https://github.com/DeusMozart/umbrel-app-store/issues
+gallery: []
+releaseNotes: >-
+  First release: WordPress 7.1.2 + MariaDB 11.5, WP-CLI companion service, self-installing first boot, read-only backups folder support.
+dependencies: []
+path: "/wp-admin"
+defaultUsername: ""
+defaultPassword: ""
+port: 8601
+icon: https://raw.githubusercontent.com/DeusMozart/umbrel-app-store/main/mozart-wp-sandbox/icon.svg
+storage:
+  dataRoot: data
+folderAccess:
+  - id: backups
+    name: Backups Folder
+    note: Select the folder where site backups live (each backup is a folder containing the site's files and a database dump). It is mounted read-only at /imports inside the app, so a restore can read from it without ever modifying your backups.
+    mounts:
+      - service: cli
+        targetPath: /imports
+        readOnly: true

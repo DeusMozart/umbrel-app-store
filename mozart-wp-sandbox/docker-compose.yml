@@ -1,0 +1,79 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      # Format: <app-id>_<docker-service-name>_1
+      APP_HOST: mozart-wp-sandbox_app_1
+      APP_PORT: 80
+      PROXY_AUTH_ADD: "false"
+
+  # WordPress web service.
+  app:
+    image: wordpress:7.1.2@sha256:bb209c8ab111746f22f578b870d866eb3f3da6028998a608202b706675450ecd
+    user: "1000:1000"
+    environment:
+      - WORDPRESS_DB_HOST=mozart-wp-sandbox_db_1
+      - WORDPRESS_DB_NAME=wordpress
+      - WORDPRESS_DB_USER=umbrel
+      - WORDPRESS_DB_PASSWORD=umbrelwordpress
+    volumes:
+      - ${APP_DATA_DIR}/data/wordpress:/var/www/html
+    restart: on-failure
+    depends_on:
+      - db
+
+  # MariaDB database service.
+  db:
+    image: mariadb:11.5.2@sha256:2d50fe0f77dac919396091e527e5e148a9de690e58f32875f113bef6506a17f5
+    user: "1000:1000"
+    environment:
+      - MYSQL_ROOT_PASSWORD=umbrelwordpressroot
+      - MYSQL_DATABASE=wordpress
+      - MYSQL_USER=umbrel
+      - MYSQL_PASSWORD=umbrelwordpress
+    volumes:
+      - ${APP_DATA_DIR}/data/db:/var/lib/mysql
+    restart: on-failure
+
+  # WP-CLI companion: installs the site on first boot, then idles so you can
+  # exec into it (Settings -> Open terminal -> cli) and run wp commands.
+  cli:
+    image: wordpress:cli-php8.3@sha256:0f7f0f895c379bb7b60b8f09562811084ac0424d544747f76d95cc785feccac0
+    user: "1000:1000"
+    environment:
+      - HOME=/var/www/html/.wpcli
+      - WORDPRESS_DB_HOST=mozart-wp-sandbox_db_1
+      - WORDPRESS_DB_NAME=wordpress
+      - WORDPRESS_DB_USER=umbrel
+      - WORDPRESS_DB_PASSWORD=umbrelwordpress
+      - SITE_URL=http://umbrel.local:8601
+      - SITE_TITLE=WP Sandbox
+      - ADMIN_USER=sandbox
+      - ADMIN_EMAIL=admin@umbrel.local
+    volumes:
+      - ${APP_DATA_DIR}/data/wordpress:/var/www/html
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p "$$HOME"
+        # wait for the site files + wp-config to exist (the app service writes them once the db answers)
+        until wp core version >/dev/null 2>&1; do sleep 3; done
+        if ! wp core is-installed 2>/dev/null; then
+          PASS=$$(tr -dc 'a-z0-9' </dev/urandom | head -c 24)
+          wp core install --url="$$SITE_URL" --title="$$SITE_TITLE" --admin_user="$$ADMIN_USER" --admin_password="$$PASS" --admin_email="$$ADMIN_EMAIL" --skip-email
+          wp option update blog_public 0
+          wp config set WP_ENVIRONMENT_TYPE local >/dev/null 2>&1 || true
+          wp rewrite structure '/%postname%/' --hard >/dev/null 2>&1 || true
+          echo "[bootstrap] Site ready: $$SITE_URL (admin: $$ADMIN_USER / $$PASS)"
+        fi
+        # magic sign-in support (package lives inside the site volume at $HOME, survives restarts)
+        wp package install aaemnnosttv/wp-cli-login-command >/dev/null 2>&1 || true
+        wp login install --activate >/dev/null 2>&1 || true
+        LINK=$$(wp login create "$$ADMIN_USER" --url-only --expires=86400 2>/dev/null)
+        echo "[magic-link] $$LINK"
+        tail -f /dev/null
+    restart: unless-stopped
+    depends_on:
+      - db
+      - app
