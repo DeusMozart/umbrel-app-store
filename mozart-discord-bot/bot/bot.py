@@ -39,7 +39,7 @@ import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 CSRF_TOKEN = uuid.uuid4().hex[:24]  # guards dashboard POSTs; rotates on restart
 LOG = logging.getLogger("bot")
 
@@ -66,10 +66,10 @@ MOODS: dict[str, dict] = {
     # cooldown: minimum seconds between two bot messages in a channel
     # daily:  maximum spontaneous messages per channel per day
     "chill":  {"chance": 0.15, "batch": 12, "cooldown": 25 * 60, "daily": 4},
-    "normal": {"chance": 0.35, "batch": 8,  "cooldown": 12 * 60, "daily": 8},
+    "normal": {"chance": 0.45, "batch": 6,  "cooldown": 12 * 60, "daily": 8},
     "chatty": {"chance": 0.60, "batch": 5,  "cooldown": 6 * 60,  "daily": 15},
 }
-MENTION_COOLDOWN = 45          # seconds between mention-triggered replies
+MENTION_COOLDOWN = 15          # seconds between mention-triggered replies
 EVAL_MIN_GAP = 300             # seconds between chime evaluations per channel
 KEEP_DAYS = 7                  # message retention for chime context
 KEEP_PER_CHANNEL = 4000        # hard cap of stored messages per channel
@@ -88,7 +88,7 @@ You are deciding whether to chime in with a short message right now.
 Guidelines:
 - Chime in if you can add something genuinely useful, funny, warm, or if you can answer a question.
 - Reply with ONLY the message you would send: 1-2 short sentences, no markdown, no surrounding quotes.
-- If the conversation is fine without you, or you would just be restating others, reply with exactly: SILENT
+- You're a member of this community: if you have a thought, a joke, a warm reaction, or a helpful answer to add, add it. Reply with exactly: SILENT only if you'd truly be noise or just restating someone.
 - Never repeat someone else's message back at them. Do not announce that you are a language model."""
 
 SUMMARY_SYSTEM = """You summarize Discord conversations into a quick catch-up brief.
@@ -675,17 +675,28 @@ async def on_message(message: discord.Message):
                              row["content"], row["ts"])
 
     mentioned = bot.user in message.mentions
-    if not mentioned and message.reference and isinstance(
-            message.reference.resolved, discord.Message) and message.reference.resolved.author.id == bot.user.id:
+    replied_bot = None  # the bot's own message that this one replies to, if any
+    if message.reference and message.reference.message_id:
+        ref = message.reference.resolved
+        if isinstance(ref, discord.Message):
+            replied_bot = ref if ref.author.id == bot.user.id else None
+        elif not isinstance(ref, discord.DeletedReferencedMessage):
+            # reference not in the cache -- fetch it so replies to the bot always trigger
+            try:
+                ref = await message.channel.fetch_message(message.reference.message_id)
+                replied_bot = ref if ref.author.id == bot.user.id else None
+            except discord.HTTPException:
+                replied_bot = None
+    if replied_bot is not None:
         mentioned = True
 
     if mentioned:
-        await handle_mention(message)
+        await handle_mention(message, replied_to=replied_bot)
     elif cid in state.chime_ids:
         await maybe_chime(message)
 
 
-async def handle_mention(message: discord.Message):
+async def handle_mention(message: discord.Message, replied_to=None):
     cid = str(message.channel.id)
     now = time.time()
     if now - state.last_mention.get(cid, 0) < MENTION_COOLDOWN:
@@ -710,7 +721,11 @@ async def handle_mention(message: discord.Message):
                 f"Reply helpfully and briefly \u2014 1-3 short sentences, casual, no markdown. "
                 f"Use the recent conversation below as context. Don't prefix with your name, "
                 f"don't announce that you're a bot, and don't summarize unless asked.")
-    prompt = (f"Recent messages:\n\n{transcript}\n\n"
+    reply_note = ""
+    if isinstance(replied_to, discord.Message):
+        reply_note = (f"They are replying to your earlier message: "
+                      f"\"{replied_to.clean_content[:280]}\"\n\n")
+    prompt = (f"Recent messages:\n\n{transcript}\n\n{reply_note}"
               f"{message.author.display_name} just wrote: {message.clean_content}\n\nReply to them.")
     try:
         reply = clean_reply(await llm_chat(system, prompt, max_tokens=500, temperature=0.8,

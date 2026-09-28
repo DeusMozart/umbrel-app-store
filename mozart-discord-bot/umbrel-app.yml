@@ -2,7 +2,7 @@ manifestVersion: 1.1
 id: mozart-discord-bot
 category: ai
 name: Discord Bot
-version: "1.4.0"
+version: "1.5.0"
 tagline: A community bot that summarizes chats — and chimes in on its own
 description: >-
   Lets a Discord bot live in your server with a memory of the conversation.
@@ -25,7 +25,7 @@ repo: https://github.com/DeusMozart/umbrel-app-store
 support: https://github.com/DeusMozart/umbrel-app-store/issues
 gallery: []
 releaseNotes: >-
-  1.4.0 — /summary: a quick public TL;DR of the recent chat, posted for everyone. 1.3.0 — soul.md: a personality file the bot lives by, editable live from the dashboard, with per-server personas layered on top. 1.2.0 — settings dashboard: live model picker with connection test, quiet hours, per-server editing. 1.1.0 — /memory + per-server personas. 1.0.0 — first release.
+  1.5.0 — replies to the bot's messages now always trigger a response, and chime-in was made livelier (joins more often, still leashed by cooldowns). 1.4.0 — /summary: a quick public TL;DR of the recent chat, posted for everyone. 1.3.0 — soul.md: a personality file the bot lives by, editable live from the dashboard, with per-server personas layered on top. 1.2.0 — settings dashboard: live model picker with connection test, quiet hours, per-server editing. 1.1.0 — /memory + per-server personas. 1.0.0 — first release.
 dependencies: []
 path: ""
 defaultUsername: ""

@@ -17,7 +17,7 @@ and can chime in on its own — hosted on your Umbrel.
 | `/memory add <text>` / `list` / `forget <id>` / `clear` | Facts the bot should remember about this community — it weaves them into its chime-ins and replies (up to 60 notes). |
 | `/botstatus` | Health check: connection, counters, LLM endpoint, last error. |
 
-Mentions always get a reply, whether or not chime-in is enabled for the channel.
+Mentions — and direct replies to the bot's messages — always get a reply, whether or not chime-in is enabled for the channel.
 
 ## Settings dashboard
 
