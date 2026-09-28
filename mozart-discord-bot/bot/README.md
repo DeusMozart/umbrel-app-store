@@ -32,6 +32,19 @@ everything live, no restart needed:
 Dashboard values override the environment variables; "Reset LLM overrides to env" clears
 them. Values are stored in the bot's SQLite DB on the Umbrel.
 
+## Soul (personality)
+
+`bot/soul.md` ships with the app and is the bot's core personality — it's fed into every
+chime-in and mention reply. Three layers, from general to specific:
+
+1. **soul.md** — the bundled default, versioned in the repo.
+2. **Dashboard override** — edit the *Soul* box at `http://umbrel.local:8095/settings`;
+   wins over the file. "Reset to bundled soul.md" clears it.
+3. **Per-server persona** — `/persona set` (or the server's dashboard page) overrides the
+   soul for that server only.
+
+Cap: 6000 characters. `SOUL_FILE` can point at a different file path.
+
 ## Configuration (environment variables)
 
 Set under umbrelOS **Settings → Advanced → environment variables** (service `bot`).
@@ -47,6 +60,7 @@ Most settings can also be changed live from the [dashboard](#settings-dashboard)
 | `PORT` | `8095` | Status dashboard port. |
 | `QUIET_HOURS` | `off` | `1-8` or `22-6` = no spontaneous messages in those hours (container-local time, i.e. UTC unless a TZ is set). |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for verbosity. |
+| `SOUL_FILE` | bundled `soul.md` | Path to a custom soul/personality file. |
 
 ## Discord setup (one-time)
 

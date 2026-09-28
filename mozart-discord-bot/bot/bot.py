@@ -39,7 +39,7 @@ import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 CSRF_TOKEN = uuid.uuid4().hex[:24]  # guards dashboard POSTs; rotates on restart
 LOG = logging.getLogger("bot")
 
@@ -58,6 +58,7 @@ DATA_DIR = env("DATA_DIR", "/data")
 PORT = int(env("PORT", "8095") or "8095")
 QUIET_HOURS = env("QUIET_HOURS", "off").lower()
 LOG_LEVEL = env("LOG_LEVEL", "INFO").upper()
+SOUL_FILE = env("SOUL_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "soul.md"))
 
 MOODS: dict[str, dict] = {
     # chance: probability a full batch gets evaluated
@@ -517,12 +518,40 @@ async def llm_chat(system: str, user: str, max_tokens: int = 350,
         raise LLMError("The LLM returned an empty reply.")
 
 
+def soul_file_text() -> str:
+    try:
+        with open(SOUL_FILE, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def soul_source() -> str:
+    if db is not None:
+        if db.get_kv("cfg:soul"):
+            return "dashboard"
+        if db.get_kv("persona"):
+            return "dashboard (legacy)"
+    if soul_file_text():
+        return "soul.md"
+    return "built-in default"
+
+
+def soul_text() -> str:
+    """Base personality: dashboard override -> legacy global persona -> bundled soul.md."""
+    if db is not None:
+        v = db.get_kv("cfg:soul") or db.get_kv("persona")
+        if v:
+            return v
+    return soul_file_text() or DEFAULT_PERSONA
+
+
 def persona(guild_id=None) -> str:
     if guild_id is not None:
         v = db.get_kv(f"persona:{guild_id}")
         if v:
             return v
-    return db.get_kv("persona", DEFAULT_PERSONA)
+    return soul_text()
 
 
 def memory_block(guild_id) -> str:
@@ -954,9 +983,10 @@ persona_group = app_commands.Group(
 @persona_group.command(name="show", description="Show the bot's persona for this server")
 async def persona_show(interaction: discord.Interaction):
     gid = interaction.guild.id if interaction.guild else None
-    src = "set for this server" if gid and db.get_kv(f"persona:{gid}") else "default"
+    override = bool(gid and db.get_kv(f"persona:{gid}"))
+    src = "set for this server" if override else "the soul (default for all servers)"
     await interaction.response.send_message(
-        f"Persona ({src}):\n```\n{persona(gid)[:1700]}\n```", ephemeral=True)
+        f"Persona \u2014 {src}:\n```\n{persona(gid)[:1700]}\n```", ephemeral=True)
 
 
 @persona_group.command(name="set", description="Set the bot's persona for this server (voice, style, quirks)")
@@ -1267,6 +1297,8 @@ def render_settings(saved: str = "", err: str = "") -> str:
     key_src = llm_key_source() or "none set"
     qh = quiet_hours_spec()
     qh_val = "" if qh in ("", "off") else qh
+    soul_override = db.get_kv("cfg:soul") or db.get_kv("persona")
+    soul_src = soul_source()
     opts = []
     for m in dict.fromkeys([model] + MODEL_FALLBACK):
         sel = " selected" if m == model else ""
@@ -1316,6 +1348,22 @@ def render_settings(saved: str = "", err: str = "") -> str:
     <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
     <button type="submit" class="ghost">Reset LLM overrides to env</button>
   </form>
+  <h2>Soul</h2>
+  <div class="snippet">
+    <form method="post" action="/settings/soul">
+      <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+      <label>Soul \u2014 the personality the bot lives by, on every server (currently: {esc(soul_src)})</label>
+      <textarea name="text" placeholder="{esc(soul_text()[:400])}">{esc(soul_override)}</textarea>
+      <button type="submit">Save soul</button>
+      <div class="note">Up to 6000 characters, fed into every chime-in and reply. Servers can
+      override it with their own persona. The bundled default ships as
+      <span class="mono">soul.md</span> in the repo.</div>
+    </form>
+    <form method="post" action="/settings/soul/reset">
+      <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+      <button type="submit" class="ghost">Reset to bundled soul.md</button>
+    </form>
+  </div>
   <h2>Chime defaults</h2>
   <div class="snippet">
     <form method="post" action="/settings/chime">
@@ -1364,7 +1412,7 @@ def render_guild_page(gid: str, saved: str = "", err: str = "") -> str:
                       "the bot has seen messages in it (or after "
                       "<span class='mono'>/chime on</span>).</div>")
     override = db.get_kv(f"persona:{gid}")
-    p_note = "set for this server" if override else "using the default (shown as placeholder)"
+    p_note = "set for this server" if override else "using the soul (default for all servers)"
     mems = db.list_memories(gid)
     mem_rows = "".join(
         f"<tr><td class='mono'>{m['id']}</td><td>{esc(m['text'])}</td>"
@@ -1394,8 +1442,8 @@ def render_guild_page(gid: str, saved: str = "", err: str = "") -> str:
   <div class="snippet">
     <form method="post" action="/settings/guild/{esc(gid)}/persona">
       <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
-      <label>Voice and personality ({esc(p_note)})</label>
-      <textarea name="text" placeholder="{esc(DEFAULT_PERSONA)}">{esc(override)}</textarea>
+      <label>Server persona \u2014 overrides the soul here ({esc(p_note)})</label>
+      <textarea name="text" placeholder="{esc(soul_text()[:400])}">{esc(override)}</textarea>
       <button type="submit">Save persona</button>
     </form>
     <form method="post" action="/settings/guild/{esc(gid)}/persona/reset">
@@ -1472,6 +1520,21 @@ class StatusHandler(BaseHTTPRequestHandler):
             elif path == "/settings/llm/clear":
                 for k in ("cfg:llm_base_url", "cfg:llm_model", "cfg:llm_api_key"):
                     db.del_kv(k)
+                self._redirect("/settings?saved=1")
+            elif path == "/settings/soul":
+                text = (f.get("text") or "").strip()
+                if len(text) > 6000:
+                    self._redirect("/settings?err=" + quote("Soul is over 6000 characters."))
+                elif text:
+                    db.set_kv("cfg:soul", text)
+                    db.del_kv("persona")  # fold the legacy global persona into the soul
+                    self._redirect("/settings?saved=1")
+                else:
+                    db.del_kv("cfg:soul")
+                    self._redirect("/settings?saved=1")
+            elif path == "/settings/soul/reset":
+                db.del_kv("cfg:soul")
+                db.del_kv("persona")
                 self._redirect("/settings?saved=1")
             elif path == "/settings/chime":
                 spec = (f.get("quiet_hours") or "").strip().lower()
@@ -1660,6 +1723,7 @@ def run_check() -> int:
     print(f"data dir:   {DATA_DIR}")
     print(f"port:       {PORT}")
     print(f"quiet hrs:  {QUIET_HOURS} (parse: {parse_quiet_hours(QUIET_HOURS)})")
+    print(f"soul:       {soul_source()} ({len(soul_text())} chars)")
     os.makedirs(DATA_DIR, exist_ok=True)
     db = DB(os.path.join(DATA_DIR, "bot.db"))
     now = time.time()
@@ -1678,6 +1742,14 @@ def run_check() -> int:
     assert db.remove_memory("0", mems[0]["id"])
     db.clear_memories("0")
     print("memory store: OK")
+    db.set_kv("cfg:soul", "self-check soul")
+    assert persona("777") == "self-check soul"
+    db.set_kv("persona:777", "server override")
+    assert persona("777") == "server override"
+    db.del_kv("persona:777")
+    db.del_kv("cfg:soul")
+    assert soul_text()
+    print("soul/persona layering: OK")
     db.conn.execute("DELETE FROM messages WHERE channel_id = '999'")
     db.conn.commit()
     start_status_server()
@@ -1690,7 +1762,7 @@ def run_check() -> int:
     base_url = f"http://127.0.0.1:{PORT}"
     with urllib.request.urlopen(f"{base_url}/settings", timeout=5) as r:
         page = r.read().decode()
-    assert "Model" in page and "csrf" in page
+    assert "Model" in page and "Soul" in page and "csrf" in page
     with urllib.request.urlopen(f"{base_url}/settings/guild/0", timeout=5) as r:
         page = r.read().decode()
     assert "Persona" in page and "Memory" in page
@@ -1705,6 +1777,10 @@ def run_check() -> int:
                            "model_custom": "", "api_key": ""})
     assert db.get_kv("cfg:llm_base_url") == "https://example.com/v1"
     db.del_kv("cfg:llm_base_url")
+    post("/settings/soul", {"text": "dashboard soul test"})
+    assert db.get_kv("cfg:soul") == "dashboard soul test"
+    post("/settings/soul/reset", {})
+    assert not db.get_kv("cfg:soul")
     try:
         urllib.request.urlopen(urllib.request.Request(
             base_url + "/settings/llm", data=b"csrf=wrong", method="POST"), timeout=5)
