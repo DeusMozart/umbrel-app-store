@@ -15,7 +15,7 @@ services:
   #   LLM_API_KEY        — key for the OpenAI-compatible endpoint below
   # Optional: LLM_BASE_URL, LLM_MODEL, QUIET_HOURS, LOG_LEVEL
   bot:
-    image: ghcr.io/deusmozart/mozart-discord-bot:1.1.0
+    image: ghcr.io/deusmozart/mozart-discord-bot:1.2.0
     restart: unless-stopped
     init: true
     extra_hosts:

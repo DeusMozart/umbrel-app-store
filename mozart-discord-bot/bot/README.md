@@ -18,9 +18,24 @@ and can chime in on its own — hosted on your Umbrel.
 
 Mentions always get a reply, whether or not chime-in is enabled for the channel.
 
+## Settings dashboard
+
+The bot's dashboard — linked as **Settings** at `http://umbrel.local:8095` — configures
+everything live, no restart needed:
+
+- **LLM** — base URL, model (dropdown populated from the endpoint's `/models`, or type a
+  custom id) and API key. *Test connection* verifies the values before you save.
+- **Quiet hours** — same setting as `QUIET_HOURS`, editable without touching env vars.
+- **Per server** — channel chime on/off + mood, persona, and memory notes, with the same
+  effect as the slash commands.
+
+Dashboard values override the environment variables; "Reset LLM overrides to env" clears
+them. Values are stored in the bot's SQLite DB on the Umbrel.
+
 ## Configuration (environment variables)
 
-Set under umbrelOS **Settings → Advanced → environment variables** (service `bot`):
+Set under umbrelOS **Settings → Advanced → environment variables** (service `bot`).
+Most settings can also be changed live from the [dashboard](#settings-dashboard) — dashboard values override env vars:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -48,5 +63,5 @@ Set under umbrelOS **Settings → Advanced → environment variables** (service 
 
 ## Maintenance
 
-- Update: bump `version:` in `umbrel-app.yml` and the `tags:` in `.github/workflows/build-discord-bot.yml`, push — the store offers an Update.
+- Update: bump the version in all three pinned spots — `umbrel-app.yml` `version:`, the image tag in `docker-compose.yml`, and the `tags:` in `.github/workflows/build-discord-bot.yml` — push; the store offers an Update.
 - Local self-check: `python bot.py --check` (validates config, DB, transcript, status server).

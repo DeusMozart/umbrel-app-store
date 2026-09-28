@@ -20,6 +20,7 @@ Commands: /summarize /catchup /chime /persona /botstatus
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -32,12 +33,14 @@ import time
 import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, quote, urlparse
 
 import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
+CSRF_TOKEN = uuid.uuid4().hex[:24]  # guards dashboard POSTs; rotates on restart
 LOG = logging.getLogger("bot")
 
 # --------------------------------------------------------------------------
@@ -347,7 +350,7 @@ def parse_quiet_hours(spec: str):
 
 
 def in_quiet_hours() -> bool:
-    rng = parse_quiet_hours(QUIET_HOURS)
+    rng = parse_quiet_hours(quiet_hours_spec())
     if not rng:
         return False
     start, end = rng
@@ -355,6 +358,47 @@ def in_quiet_hours() -> bool:
     if start < end:
         return start <= h < end
     return h >= start or h < end
+
+
+def esc(s) -> str:
+    return html.escape(str(s), quote=True)
+
+
+def llm_settings() -> tuple[str, str, str]:
+    """(base_url, model, api_key) — dashboard overrides win over env vars."""
+    if db is None:
+        return LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
+    base = db.get_kv("cfg:llm_base_url") or LLM_BASE_URL
+    model = db.get_kv("cfg:llm_model") or LLM_MODEL
+    key = db.get_kv("cfg:llm_api_key") or LLM_API_KEY
+    return base.rstrip("/"), model, key
+
+
+def llm_key_source() -> str:
+    if db is not None and db.get_kv("cfg:llm_api_key"):
+        return "dashboard"
+    return "env" if LLM_API_KEY else ""
+
+
+def quiet_hours_spec() -> str:
+    if db is None:
+        return QUIET_HOURS
+    return (db.get_kv("cfg:quiet_hours") or QUIET_HOURS).strip().lower()
+
+
+def nav_html() -> str:
+    return ("<div class='nav'><a href='/'>Status</a><a href='/settings'>Settings</a></div>")
+
+
+def guild_name(gid: str) -> str:
+    if bot is not None:
+        try:
+            g = bot.get_guild(int(gid))
+        except (ValueError, AttributeError):
+            g = None
+        if g:
+            return g.name
+    return f"server {gid}"
 
 
 def to_rowdict(author_name, is_bot, content, ts) -> dict:
@@ -418,13 +462,14 @@ class LLMError(Exception):
 
 async def llm_chat(system: str, user: str, max_tokens: int = 350,
                    temperature: float = 0.7, session: str | None = None) -> str:
-    if not LLM_API_KEY:
-        raise LLMError("LLM_API_KEY is not set \u2014 add it in the app's Settings \u2192 "
-                       "Advanced \u2192 environment variables.")
-    if not LLM_MODEL:
-        raise LLMError("LLM_MODEL is not set.")
+    base, model, key = llm_settings()
+    if not key:
+        raise LLMError("No LLM API key \u2014 add one in the app's Settings \u2192 Advanced \u2192 "
+                       "environment variables, or in the dashboard (/settings).")
+    if not model:
+        raise LLMError("No LLM model is set.")
     payload = {
-        "model": LLM_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -432,8 +477,8 @@ async def llm_chat(system: str, user: str, max_tokens: int = 350,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    headers = {"Authorization": f"Bearer {LLM_API_KEY}"}
-    if "opencode" in LLM_BASE_URL:
+    headers = {"Authorization": f"Bearer {key}"}
+    if "opencode" in base:
         # OpenCode Zen/Go require an affinity key on every request (HTTP 400
         # MissingSessionID without it); a stable per-channel key keeps the
         # upstream prompt cache warm.
@@ -444,7 +489,7 @@ async def llm_chat(system: str, user: str, max_tokens: int = 350,
         try:
             async with httpx.AsyncClient(timeout=90) as client:
                 resp = await client.post(
-                    f"{LLM_BASE_URL}/chat/completions",
+                    f"{base}/chat/completions",
                     headers=headers,
                     json=payload)
         except httpx.HTTPError as e:
@@ -896,8 +941,8 @@ async def chime_status(interaction: discord.Interaction):
         f"Pending messages: {state.pending.get(cid, 0)}/{m['batch']} \u00b7 "
         f"cooldown: {'ready' if cool <= 0 else human_delta(cool) + ' left'} \u00b7 "
         f"sent today: {today}/{m['daily']} \u00b7 stored context: {per.get(cid, 0)} messages"
-        + (f"\nQuiet hours: {QUIET_HOURS} (now {'quiet' if in_quiet_hours() else 'active'})"
-           if parse_quiet_hours(QUIET_HOURS) else ""),
+        + (f"\nQuiet hours: {quiet_hours_spec()} (now {'quiet' if in_quiet_hours() else 'active'})"
+           if parse_quiet_hours(quiet_hours_spec()) else ""),
         ephemeral=True)
 
 
@@ -1017,6 +1062,7 @@ async def botstatus(interaction: discord.Interaction):
     ok = bot.is_ready()
     total, _ = db.counts()
     mems = db.count_memories(str(interaction.guild.id)) if interaction.guild else 0
+    lbase, lmodel, lkey = llm_settings()
     chans = db.all_channels()
     mine = [c for c in chans if interaction.guild and c["guild_id"] == str(interaction.guild.id)]
     active = [c["name"] for c in mine if c["chime"]]
@@ -1027,8 +1073,9 @@ async def botstatus(interaction: discord.Interaction):
         f"{len(active) if active else 'none'}{(' (' + ', '.join('#' + n for n in active[:8]) + ')') if active else ''}\n"
         f"Stored messages: {total} \u00b7 memory notes: {mems} \u00b7 "
         f"chimes sent: {state.chimes_sent} \u00b7 summaries: {state.summaries_run}\n"
-        f"LLM: `{LLM_MODEL}` @ `{LLM_BASE_URL}` \u00b7 API key "
-        f"{'set' if LLM_API_KEY else '**missing**'}"
+        f"LLM: `{lmodel}` @ `{lbase}` \u00b7 API key "
+        f"{'set' if lkey else '**missing**'}\n"
+        f"Dashboard: http://umbrel.local:{PORT}/settings"
         + (f"\nLast LLM error: `{state.llm_last_error[:160]}`" if state.llm_last_error else ""),
         ephemeral=True)
 
@@ -1063,6 +1110,21 @@ tr:last-child td { border-bottom:none; }
 .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
 .snippet { background:#171a21; border:1px solid #232733; border-radius:12px; padding:12px 16px; font-size:14px; }
 footer { color:#5c6170; font-size:12px; margin-top:34px; }
+.nav { margin:12px 0 6px; }
+.nav a { color:#8fb0ff; text-decoration:none; margin-right:18px; font-size:14px; }
+label { display:block; font-size:12px; color:#8b90a0; text-transform:uppercase; letter-spacing:.06em; margin:14px 0 5px; }
+input[type=text], input[type=password], select, textarea {
+  width:100%; background:#0f1115; color:#e8eaf0; border:1px solid #2a2f3d;
+  border-radius:8px; padding:9px 11px; font:14px/1.45 inherit; }
+textarea { min-height:120px; resize:vertical; }
+button { background:#2f6fed; color:#fff; border:0; border-radius:8px; padding:9px 16px;
+  font:600 14px/1 inherit; cursor:pointer; margin:12px 10px 0 0; }
+button.ghost { background:#232733; }
+button.danger { background:#7a3b3b; padding:5px 11px; margin:0; font-size:13px; }
+.note { color:#8b90a0; font-size:13px; margin-top:10px; }
+.note.ok { color:#3fb950; }
+.note.err { color:#f85149; }
+form { margin:0; }
 """
 
 
@@ -1070,6 +1132,7 @@ def status_payload() -> dict:
     snap = state.snapshot()
     total, per = db.counts()
     memories_total = db.count_memories()
+    lbase, lmodel, lkey = llm_settings()
     channels = []
     for c in db.all_channels():
         channels.append({
@@ -1088,9 +1151,9 @@ def status_payload() -> dict:
         "chimes_sent": snap["chimes_sent"],
         "summaries_run": snap["summaries_run"],
         "last_chime": snap["last_chime"],
-        "llm": {"base_url": LLM_BASE_URL, "model": LLM_MODEL,
-                "api_key_set": bool(LLM_API_KEY), "last_error": snap["llm_last_error"]},
-        "quiet_hours": QUIET_HOURS, "quiet_now": in_quiet_hours(),
+        "llm": {"base_url": lbase, "model": lmodel,
+                "api_key_set": bool(lkey), "last_error": snap["llm_last_error"]},
+        "quiet_hours": quiet_hours_spec(), "quiet_now": in_quiet_hours(),
         "discord_token_set": bool(TOKEN),
         "channels": channels,
     }
@@ -1127,6 +1190,7 @@ def render_html() -> str:
 <div class="wrap">
   <h1><span class="dot {dot}"></span>{status_txt}</h1>
   <div class="sub">Discord bot \u00b7 v{p['version']} \u00b7 up {p['uptime']}</div>
+  {nav_html()}
   {banner}
   <div class="grid">
     <div class="card"><div class="k">Guilds</div><div class="v">{len(p['guilds'])}</div></div>
@@ -1150,28 +1214,404 @@ def render_html() -> str:
             f"<body>{body}</body></html>")
 
 
+MODEL_FALLBACK = ["deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
+                  "glm-5.3", "glm-5.3-flash", "grok-4.7", "gpt-6-luna"]
+
+SETTINGS_JS = """
+<script>
+async function loadModels() {
+  const sel = document.getElementById('model-select');
+  if (!sel) return;
+  try {
+    const r = await fetch('/settings/models');
+    const d = await r.json();
+    if (!d.models || !d.models.length) return;
+    const cur = sel.value;
+    sel.innerHTML = '';
+    const ids = d.models.slice();
+    if (cur && !ids.includes(cur)) ids.unshift(cur);
+    for (const m of ids) {
+      const o = document.createElement('option');
+      o.value = m; o.textContent = m;
+      if (m === cur) o.selected = true;
+      sel.appendChild(o);
+    }
+  } catch (e) {}
+}
+async function testLLM() {
+  const btn = document.getElementById('test-btn');
+  const out = document.getElementById('test-result');
+  const f = btn.closest('form');
+  out.textContent = 'Testing...';
+  out.className = 'note';
+  try {
+    const r = await fetch('/settings/llm/test', {method: 'POST',
+      body: new URLSearchParams(new FormData(f))});
+    const d = await r.json();
+    if (d.ok) { out.textContent = 'OK (' + d.ms + ' ms) - model replied: ' + d.reply;
+                out.className = 'note ok'; }
+    else { out.textContent = 'Failed: ' + d.error; out.className = 'note err'; }
+  } catch (e) { out.textContent = 'Failed: ' + e; out.className = 'note err'; }
+}
+document.addEventListener('DOMContentLoaded', function () {
+  loadModels();
+  const b = document.getElementById('test-btn');
+  if (b) b.addEventListener('click', testLLM);
+});
+</script>
+"""
+
+
+def render_settings(saved: str = "", err: str = "") -> str:
+    base, model, _key = llm_settings()
+    key_src = llm_key_source() or "none set"
+    qh = quiet_hours_spec()
+    qh_val = "" if qh in ("", "off") else qh
+    opts = []
+    for m in dict.fromkeys([model] + MODEL_FALLBACK):
+        sel = " selected" if m == model else ""
+        opts.append(f"<option value='{esc(m)}'{sel}>{esc(m)}</option>")
+    guild_ids = {str(g.id) for g in bot.guilds}
+    guild_ids |= {c["guild_id"] for c in db.all_channels()}
+    if guild_ids:
+        rows = "".join(
+            f"<tr><td><a href='/settings/guild/{esc(g)}'>{esc(guild_name(g))}</a></td>"
+            f"<td class='muted mono'>{esc(g)}</td></tr>"
+            for g in sorted(guild_ids))
+        guild_table = "<table><tr><th>Server</th><th>ID</th></tr>" + rows + "</table>"
+    else:
+        guild_table = ("<div class='muted'>No servers yet \u2014 they appear once the bot "
+                       "connects and sees messages.</div>")
+    banner = ""
+    if saved:
+        banner = "<div class='snippet' style='border-color:#2e5e34'><b>Saved.</b></div>"
+    if err:
+        banner = f"<div class='snippet' style='border-color:#7a3b3b'><b>{esc(err)}</b></div>"
+    body = f"""
+<div class="wrap">
+  <h1>Discord Bot \u2014 settings</h1>
+  <div class="sub">v{VERSION} \u00b7 changes apply immediately, no restart needed</div>
+  {nav_html()}
+  {banner}
+  <h2>LLM</h2>
+  <div class="snippet">
+    <form method="post" action="/settings/llm">
+      <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+      <label>Base URL</label>
+      <input type="text" name="base_url" value="{esc(base)}">
+      <label>Model</label>
+      <select name="model" id="model-select">{opts}</select>
+      <label>Custom model id (optional \u2014 overrides the dropdown)</label>
+      <input type="text" name="model_custom" placeholder="e.g. deepseek-v4.1-flash">
+      <label>API key</label>
+      <input type="password" name="api_key" placeholder="leave blank to keep current ({esc(key_src)})" autocomplete="new-password">
+      <button type="submit">Save</button>
+      <button type="button" class="ghost" id="test-btn">Test connection</button>
+      <div id="test-result" class="note"></div>
+    </form>
+    <div class="note">Key currently from: {esc(key_src)}. Blank fields fall back to the
+    app's environment variables.</div>
+  </div>
+  <form method="post" action="/settings/llm/clear">
+    <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+    <button type="submit" class="ghost">Reset LLM overrides to env</button>
+  </form>
+  <h2>Chime defaults</h2>
+  <div class="snippet">
+    <form method="post" action="/settings/chime">
+      <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+      <label>Quiet hours (no spontaneous chime-ins)</label>
+      <input type="text" name="quiet_hours" value="{esc(qh_val)}" placeholder="e.g. 23-7 \u2014 empty = off">
+      <button type="submit">Save</button>
+    </form>
+    <div class="note">24h range like <span class="mono">23-7</span> (wraps midnight).
+    Per-channel chime on/off and moods are on each server's page.</div>
+  </div>
+  <h2>Servers</h2>
+  {guild_table}
+  <footer>MOZART DISCORD BOT \u00b7 http://umbrel.local:{PORT}/settings</footer>
+</div>"""
+    return ("<!doctype html><html><head><meta charset='utf-8'>"
+            f"<title>Discord Bot \u2014 settings</title><style>{CSS}</style></head>"
+            f"<body>{body}{SETTINGS_JS}</body></html>")
+
+
+def render_guild_page(gid: str, saved: str = "", err: str = "") -> str:
+    chans = [c for c in db.all_channels() if c["guild_id"] == gid]
+    rows = []
+    for c in chans:
+        cid = esc(c["channel_id"])
+        chime_opts = "".join(
+            f"<option value='{v}'{' selected' if bool(c['chime']) == (v == '1') else ''}>{lab}</option>"
+            for v, lab in (("1", "on"), ("0", "off")))
+        mood_opts = "".join(
+            f"<option value='{m}'{' selected' if (c['mood'] or 'normal') == m else ''}>{m}</option>"
+            for m in MOODS)
+        rows.append(
+            f"<tr><td>#{esc(c['name'] or c['channel_id'])}</td>"
+            f"<td><select name='chime_{cid}'>{chime_opts}</select></td>"
+            f"<td><select name='mood_{cid}'>{mood_opts}</select></td>"
+            f"<td class='muted mono'>{esc(c['channel_id'])}</td></tr>")
+    if rows:
+        chan_block = (
+            f"<form method='post' action='/settings/guild/{esc(gid)}/channels'>"
+            f"<input type='hidden' name='csrf' value='{CSRF_TOKEN}'>"
+            "<table><tr><th>Channel</th><th>Chime-in</th><th>Mood</th><th>ID</th></tr>"
+            + "".join(rows) + "</table>"
+            "<button type='submit'>Save channels</button></form>")
+    else:
+        chan_block = ("<div class='muted'>No channels here yet \u2014 a channel appears once "
+                      "the bot has seen messages in it (or after "
+                      "<span class='mono'>/chime on</span>).</div>")
+    override = db.get_kv(f"persona:{gid}")
+    p_note = "set for this server" if override else "using the default (shown as placeholder)"
+    mems = db.list_memories(gid)
+    mem_rows = "".join(
+        f"<tr><td class='mono'>{m['id']}</td><td>{esc(m['text'])}</td>"
+        f"<td style='text-align:right'><form method='post' "
+        f"action='/settings/guild/{esc(gid)}/memory/delete'>"
+        f"<input type='hidden' name='csrf' value='{CSRF_TOKEN}'>"
+        f"<input type='hidden' name='id' value='{m['id']}'>"
+        f"<button type='submit' class='danger'>Delete</button></form></td></tr>"
+        for m in mems)
+    mem_block = (f"<table><tr><th>#</th><th>Note</th><th></th></tr>{mem_rows}</table>"
+                 if mems else "<div class='muted'>No notes yet.</div>")
+    banner = ""
+    if saved:
+        banner = "<div class='snippet' style='border-color:#2e5e34'><b>Saved.</b></div>"
+    if err:
+        banner = f"<div class='snippet' style='border-color:#7a3b3b'><b>{esc(err)}</b></div>"
+    body = f"""
+<div class="wrap">
+  <h1>{esc(guild_name(gid))}</h1>
+  <div class="sub">server settings \u00b7 {esc(gid)}</div>
+  {nav_html()}
+  <div class="nav"><a href="/settings">\u2190 all servers</a></div>
+  {banner}
+  <h2>Channels</h2>
+  {chan_block}
+  <h2>Persona</h2>
+  <div class="snippet">
+    <form method="post" action="/settings/guild/{esc(gid)}/persona">
+      <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+      <label>Voice and personality ({esc(p_note)})</label>
+      <textarea name="text" placeholder="{esc(DEFAULT_PERSONA)}">{esc(override)}</textarea>
+      <button type="submit">Save persona</button>
+    </form>
+    <form method="post" action="/settings/guild/{esc(gid)}/persona/reset">
+      <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+      <button type="submit" class="ghost">Reset to default</button>
+    </form>
+  </div>
+  <h2>Memory ({len(mems)}/60)</h2>
+  <div class="snippet">
+    <form method="post" action="/settings/guild/{esc(gid)}/memory/add">
+      <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+      <label>Add a note the bot should remember here</label>
+      <input type="text" name="text" placeholder="e.g. Zak leads rallies in Kingshot, Kingdom 259">
+      <button type="submit">Add note</button>
+    </form>
+  </div>
+  {mem_block}
+  <footer>MOZART DISCORD BOT \u00b7 http://umbrel.local:{PORT}/settings</footer>
+</div>"""
+    return ("<!doctype html><html><head><meta charset='utf-8'>"
+            f"<title>{esc(guild_name(gid))} \u2014 settings</title><style>{CSS}</style></head>"
+            f"<body>{body}{SETTINGS_JS}</body></html>")
+
+
 class StatusHandler(BaseHTTPRequestHandler):
+    # POSTs are guarded by a per-process CSRF token embedded in every form
+    # (an Origin check would be unreliable here: umbrel's app proxy may
+    # rewrite the Host header before the request reaches us).
     def do_GET(self):
         try:
-            if self.path.startswith("/healthz"):
+            parsed = urlparse(self.path)
+            path = parsed.path
+            q = parse_qs(parsed.query)
+            if path.startswith("/healthz"):
                 ready = bool(bot and bot.is_ready())
                 self._json(200, {"ok": True, "discord_ready": ready})
-            elif self.path.startswith("/status.json"):
+            elif path.startswith("/status.json"):
                 self._json(200, status_payload())
-            elif self.path == "/" or self.path.startswith("/index"):
-                page = render_html().encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(page)))
-                self.end_headers()
-                self.wfile.write(page)
+            elif path == "/settings":
+                self._html(200, render_settings(
+                    saved=q.get("saved", [""])[0], err=q.get("err", [""])[0]))
+            elif path == "/settings/models":
+                self._models()
+            elif path.startswith("/settings/guild/"):
+                parts = path.split("/")
+                gid = parts[3] if len(parts) > 3 else ""
+                if gid:
+                    self._html(200, render_guild_page(
+                        gid, saved=q.get("saved", [""])[0], err=q.get("err", [""])[0]))
+                else:
+                    self._json(404, {"error": "missing server id"})
+            elif path == "/" or path.startswith("/index"):
+                self._html(200, render_html())
             else:
-                self.send_response(404)
-                self.end_headers()
+                self._json(404, {"error": "not found"})
         except BrokenPipeError:
             pass
         except Exception as e:  # noqa: BLE001
             LOG.warning("status server error: %s", e)
+
+    def do_POST(self):
+        try:
+            path = urlparse(self.path).path
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+            f = {k: v[0] for k, v in parse_qs(raw).items()}
+            if f.get("csrf") != CSRF_TOKEN:
+                self._json(403, {"error": "bad csrf token \u2014 reload the page"})
+                return
+            if path == "/settings/llm":
+                self._save_llm(f)
+            elif path == "/settings/llm/test":
+                self._json(200, self._test_llm(f))
+            elif path == "/settings/llm/clear":
+                for k in ("cfg:llm_base_url", "cfg:llm_model", "cfg:llm_api_key"):
+                    db.del_kv(k)
+                self._redirect("/settings?saved=1")
+            elif path == "/settings/chime":
+                spec = (f.get("quiet_hours") or "").strip().lower()
+                if spec in ("", "off"):
+                    db.del_kv("cfg:quiet_hours")
+                elif parse_quiet_hours(spec):
+                    db.set_kv("cfg:quiet_hours", spec)
+                else:
+                    self._redirect("/settings?err=" + quote(
+                        "Quiet hours must look like 23-7, or be empty."))
+                    return
+                self._redirect("/settings?saved=1")
+            elif path.startswith("/settings/guild/"):
+                self._guild_action(path, f)
+            else:
+                self._json(404, {"error": "not found"})
+        except BrokenPipeError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("settings POST error: %s", e)
+            try:
+                self._json(500, {"error": str(e)[:200]})
+            except Exception as e2:  # noqa: BLE001
+                LOG.debug("could not send error response: %s", e2)
+
+    def _save_llm(self, f):
+        base = (f.get("base_url") or "").strip().rstrip("/")
+        custom = (f.get("model_custom") or "").strip()
+        model = custom or (f.get("model") or "").strip()
+        key = (f.get("api_key") or "").strip()
+        if base:
+            db.set_kv("cfg:llm_base_url", base)
+        else:
+            db.del_kv("cfg:llm_base_url")
+        if model:
+            db.set_kv("cfg:llm_model", model)
+        else:
+            db.del_kv("cfg:llm_model")
+        if key:
+            db.set_kv("cfg:llm_api_key", key)
+        self._redirect("/settings?saved=1")
+
+    def _test_llm(self, f) -> dict:
+        sbase, smodel, skey = llm_settings()
+        base = ((f.get("base_url") or "").strip().rstrip("/")) or sbase
+        custom = (f.get("model_custom") or "").strip()
+        model = custom or (f.get("model") or "").strip() or smodel
+        key = (f.get("api_key") or "").strip() or skey
+        if not key:
+            return {"ok": False, "error": "no API key set"}
+        if not model:
+            return {"ok": False, "error": "no model set"}
+        headers = {"Authorization": f"Bearer {key}"}
+        if "opencode" in base:
+            headers["x-opencode-session"] = f"dashboard-test-{uuid.uuid4().hex[:8]}"
+        payload = {"model": model,
+                   "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+                   "max_tokens": 400, "temperature": 0.2}
+        t0 = time.time()
+        try:
+            with httpx.Client(timeout=30) as c:
+                r = c.post(f"{base}/chat/completions", headers=headers, json=payload)
+            ms = int((time.time() - t0) * 1000)
+            if r.status_code != 200:
+                return {"ok": False, "ms": ms, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+            reply = (r.json()["choices"][0]["message"].get("content") or "").strip()
+            return {"ok": True, "ms": ms,
+                    "reply": reply[:200] or "(empty reply \u2014 try another model)"}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "ms": int((time.time() - t0) * 1000),
+                    "error": f"{type(e).__name__}: {e}"}
+
+    def _models(self):
+        base, model, key = llm_settings()
+        out: dict = {"models": [], "current": model}
+        if key:
+            headers = {"Authorization": f"Bearer {key}"}
+            if "opencode" in base:
+                headers["x-opencode-session"] = "dashboard-models"
+            try:
+                with httpx.Client(timeout=10) as c:
+                    r = c.get(f"{base}/models", headers=headers)
+                if r.status_code == 200:
+                    out["models"] = sorted(
+                        {m.get("id") for m in r.json().get("data", []) if m.get("id")})
+                else:
+                    out["error"] = f"HTTP {r.status_code}"
+            except Exception as e:  # noqa: BLE001
+                out["error"] = str(e)[:160]
+        self._json(200, out)
+
+    def _guild_action(self, path, f):
+        parts = path.split("/")
+        gid = parts[3] if len(parts) > 3 else ""
+        rest = "/".join(p for p in parts[4:] if p)
+        back = f"/settings/guild/{quote(gid)}"
+        if not gid:
+            self._json(404, {"error": "missing server id"})
+        elif rest == "channels":
+            for c in db.all_channels():
+                if c["guild_id"] != gid:
+                    continue
+                cid = c["channel_id"]
+                if f"chime_{cid}" in f:
+                    db.set_chime(cid, f[f"chime_{cid}"] == "1")
+                if f.get(f"mood_{cid}") in MOODS:
+                    db.set_mood(cid, f[f"mood_{cid}"])
+            state.chime_ids = db.chime_channels()
+            self._redirect(back + "?saved=1")
+        elif rest == "persona":
+            text = (f.get("text") or "").strip()
+            if len(text) > 1500:
+                self._redirect(back + "?err=" + quote("Persona is over 1500 characters."))
+            elif text:
+                db.set_kv(f"persona:{gid}", text)
+                self._redirect(back + "?saved=1")
+            else:
+                db.del_kv(f"persona:{gid}")
+                self._redirect(back + "?saved=1")
+        elif rest == "persona/reset":
+            db.del_kv(f"persona:{gid}")
+            self._redirect(back + "?saved=1")
+        elif rest == "memory/add":
+            text = " ".join((f.get("text") or "").split())[:400]
+            if not text:
+                self._redirect(back + "?err=" + quote("Empty note."))
+            elif db.count_memories(gid) >= 60:
+                self._redirect(back + "?err=" + quote("Memory is full (60 notes)."))
+            else:
+                db.add_memory(gid, text)
+                self._redirect(back + "?saved=1")
+        elif rest == "memory/delete":
+            try:
+                mid = int(f.get("id") or "0")
+            except ValueError:
+                mid = 0
+            db.remove_memory(gid, mid)
+            self._redirect(back + "?saved=1")
+        else:
+            self._json(404, {"error": "unknown settings action"})
 
     def _json(self, code: int, obj: dict):
         data = json.dumps(obj).encode()
@@ -1180,6 +1620,20 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _html(self, code: int, page: str):
+        data = page.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _redirect(self, path: str):
+        self.send_response(303)
+        self.send_header("Location", path)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def log_message(self, fmt, *args):
         LOG.debug("status: " + fmt, *args)
@@ -1227,10 +1681,37 @@ def run_check() -> int:
     db.conn.execute("DELETE FROM messages WHERE channel_id = '999'")
     db.conn.commit()
     start_status_server()
+    import urllib.error
+    import urllib.parse
     import urllib.request
     url = f"http://127.0.0.1:{PORT}/healthz"
     with urllib.request.urlopen(url, timeout=5) as r:
         print(f"status server: OK ({url} -> {r.read().decode()})")
+    base_url = f"http://127.0.0.1:{PORT}"
+    with urllib.request.urlopen(f"{base_url}/settings", timeout=5) as r:
+        page = r.read().decode()
+    assert "Model" in page and "csrf" in page
+    with urllib.request.urlopen(f"{base_url}/settings/guild/0", timeout=5) as r:
+        page = r.read().decode()
+    assert "Persona" in page and "Memory" in page
+
+    def post(path, data):
+        body = urllib.parse.urlencode({"csrf": CSRF_TOKEN, **data}).encode()
+        req = urllib.request.Request(base_url + path, data=body, method="POST")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.read()
+
+    post("/settings/llm", {"base_url": "https://example.com/v1", "model": "m",
+                           "model_custom": "", "api_key": ""})
+    assert db.get_kv("cfg:llm_base_url") == "https://example.com/v1"
+    db.del_kv("cfg:llm_base_url")
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            base_url + "/settings/llm", data=b"csrf=wrong", method="POST"), timeout=5)
+        raise AssertionError("bad csrf token was accepted")
+    except urllib.error.HTTPError as e:
+        assert e.code == 403
+    print("settings endpoints: OK")
     print("== all checks passed ==")
     return 0
 
