@@ -1,0 +1,32 @@
+manifestVersion: 1.1
+id: mozart-discord-bot
+category: ai
+name: Discord Bot
+version: "1.0.0"
+tagline: A community bot that summarizes chats — and chimes in on its own
+description: >-
+  Lets a Discord bot live in your server with a memory of the conversation.
+
+  • /summarize — a crisp brief of any channel's recent messages.
+  • /catchup — exactly what happened since you last spoke.
+  • /chime — the bot joins the conversation on its own now and then: short, personable, on a leash (per-channel cooldown, daily caps, optional quiet hours).
+  • /persona — shape its voice.
+
+  Works with any OpenAI-compatible LLM endpoint, so you can point it at OpenCode Zen, OpenAI, OpenRouter or anything else that speaks the same API. Add your Discord bot token and LLM API key under Settings → Advanced → environment variables.
+developer: DeusMozart
+website: https://github.com/DeusMozart/umbrel-app-store
+submitter: DeusMozart
+submission: https://github.com/DeusMozart/umbrel-app-store
+repo: https://github.com/DeusMozart/umbrel-app-store
+support: https://github.com/DeusMozart/umbrel-app-store/issues
+gallery: []
+releaseNotes: >-
+  First release: live summaries (/summarize, /catchup), ambient chime-in with moods and cooldowns, settable persona, and a status dashboard on port 8095.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+port: 8095
+icon: https://raw.githubusercontent.com/DeusMozart/umbrel-app-store/main/mozart-discord-bot/icon.svg
+storage:
+  dataRoot: data

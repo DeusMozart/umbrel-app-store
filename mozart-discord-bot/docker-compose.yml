@@ -1,0 +1,27 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      # Format: <app-id>_<docker-service-name>_1
+      APP_HOST: mozart-discord-bot_bot_1
+      APP_PORT: 8095
+
+  # The Discord bot + status dashboard.
+  #
+  # Secrets are NOT in this file. Add them in the umbrelOS UI under
+  # Settings -> Advanced -> environment variables (service "bot"):
+  #   DISCORD_BOT_TOKEN  — from the Discord Developer Portal
+  #   LLM_API_KEY        — key for the OpenAI-compatible endpoint below
+  # Optional: LLM_BASE_URL, LLM_MODEL, QUIET_HOURS, LOG_LEVEL
+  bot:
+    image: ghcr.io/deusmozart/mozart-discord-bot:1.0.0
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    environment:
+      - DATA_DIR=/data
+      - PORT=8095

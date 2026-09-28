@@ -1,0 +1,51 @@
+# Discord Bot (mozart-discord-bot)
+
+A Discord bot that lives in your server, remembers the conversation, summarizes it,
+and can chime in on its own — hosted on your Umbrel.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `/summarize [count]` | Summarizes the last N messages (default 120, max 500) of the current channel. |
+| `/catchup` | Summarizes everything that happened in the channel since *your* last message. |
+| `/chime on` / `off` | Enables/disables the bot joining this channel's conversation spontaneously (needs Manage Server). |
+| `/chime mood chill\|normal\|chatty` | How chatty it should be. normal ≈ up to 8 messages/day, min 12 min apart. |
+| `/chime status` | Current chime settings and activity for this channel. |
+| `/persona show` / `/persona set <text>` | The bot's voice and personality (up to 1500 chars). |
+| `/botstatus` | Health check: connection, counters, LLM endpoint, last error. |
+
+Mentions always get a reply, whether or not chime-in is enabled for the channel.
+
+## Configuration (environment variables)
+
+Set under umbrelOS **Settings → Advanced → environment variables** (service `bot`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DISCORD_BOT_TOKEN` | — | **Required.** From the Discord Developer Portal → your app → Bot. |
+| `LLM_API_KEY` | — | **Required.** API key for the OpenAI-compatible endpoint. |
+| `LLM_BASE_URL` | `https://opencode.ai/zen/go/v1` | Any OpenAI-compatible base URL (OpenAI: `https://api.openai.com/v1`, OpenRouter, Ollama via `http://host.docker.internal:11434/v1`, …). |
+| `LLM_MODEL` | `deepseek-v4.1-flash` | Model name for the endpoint. |
+| `DATA_DIR` | `/data` | Where the SQLite memory lives. |
+| `PORT` | `8095` | Status dashboard port. |
+| `QUIET_HOURS` | `off` | `1-8` or `22-6` = no spontaneous messages in those hours (container-local time, i.e. UTC unless a TZ is set). |
+| `LOG_LEVEL` | `INFO` | `DEBUG` for verbosity. |
+
+## Discord setup (one-time)
+
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application.
+2. **Bot → Privileged Gateway Intents: enable MESSAGE CONTENT INTENT** (required to read messages).
+3. Copy the bot token (Bot → Reset Token) into the app's environment variables.
+4. Invite it with scopes `bot` + `applications.commands` and permissions: View Channels, Send Messages, Read Message History, Embed Links.
+
+## Privacy & behavior notes
+
+- Messages are only stored for channels where chime-in is on, capped per channel and pruned after 7 days. `/summarize` and `/catchup` read live from Discord and work anywhere the bot can read history, even with chime off.
+- Spontaneous messages respect per-channel cooldown, a daily cap, and quiet hours. If the model has nothing useful to add it stays silent (it's instructed to prefer SILENT).
+- The status dashboard is at `http://umbrel.local:8095` (JSON: `/status.json`, health: `/healthz`).
+
+## Maintenance
+
+- Update: bump `version:` in `umbrel-app.yml` and the `tags:` in `.github/workflows/build-discord-bot.yml`, push — the store offers an Update.
+- Local self-check: `python bot.py --check` (validates config, DB, transcript, status server).
