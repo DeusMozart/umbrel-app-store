@@ -2,7 +2,7 @@ manifestVersion: 1.1
 id: mozart-wp-sandbox
 category: social
 name: WP Sandbox
-version: "1.0.0"
+version: "1.0.1"
 tagline: Local WordPress site for backups, staging & testing
 description: >-
   A self-contained WordPress site (WordPress 7.1.2 + MariaDB 11.5) made for hosting local copies of websites on your Umbrel.
@@ -18,7 +18,7 @@ repo: https://github.com/DeusMozart/umbrel-app-store
 support: https://github.com/DeusMozart/umbrel-app-store/issues
 gallery: []
 releaseNotes: >-
-  First release: WordPress 7.1.2 + MariaDB 11.5, WP-CLI companion service, self-installing first boot, read-only backups folder support.
+  Adds an init service that repairs ownership of the app's data folder on every boot, fixing first-install permission errors with the WordPress and MariaDB services.
 dependencies: []
 path: "/wp-admin"
 defaultUsername: ""

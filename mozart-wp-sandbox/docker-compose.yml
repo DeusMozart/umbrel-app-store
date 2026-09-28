@@ -8,6 +8,20 @@ services:
       APP_PORT: 80
       PROXY_AUTH_ADD: "false"
 
+  # Repairs ownership of the app data root on every boot: umbrel creates the
+  # bind-source directories but they can end up owned by root, which breaks
+  # the uid-1000 wordpress + mariadb services on first install.
+  init:
+    image: busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+    user: "0:0"
+    command:
+      - |
+        chown -R 1000:1000 /data 2>/dev/null || true
+        exec tail -f /dev/null
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    restart: unless-stopped
+
   # WordPress web service.
   app:
     image: wordpress:7.1.2@sha256:bb209c8ab111746f22f578b870d866eb3f3da6028998a608202b706675450ecd
@@ -21,6 +35,7 @@ services:
       - ${APP_DATA_DIR}/data/wordpress:/var/www/html
     restart: on-failure
     depends_on:
+      - init
       - db
 
   # MariaDB database service.
@@ -35,6 +50,8 @@ services:
     volumes:
       - ${APP_DATA_DIR}/data/db:/var/lib/mysql
     restart: on-failure
+    depends_on:
+      - init
 
   # WP-CLI companion: installs the site on first boot, then idles so you can
   # exec into it (Settings -> Open terminal -> cli) and run wp commands.
@@ -75,5 +92,6 @@ services:
         tail -f /dev/null
     restart: unless-stopped
     depends_on:
+      - init
       - db
       - app
