@@ -1,0 +1,29 @@
+manifestVersion: 1.1
+id: mozart-wp-command
+category: social
+name: WP Command
+version: "1.0.0"
+tagline: Command center for the WordPress sites on your Umbrel
+description: >-
+  A WordPress site running the MainWP Dashboard — the control center for every WordPress copy hosted on this Umbrel.
+
+  Add a site by entering its address and admin login: MainWP installs its companion plugin and then gives you one-click sign-in, plugin and theme management, and bulk updates for the whole fleet, all from one dashboard.
+
+  Like WP Sandbox, it installs itself on first boot (database, admin account, permalinks) and prints a one-time magic sign-in link into its logs. No passwords to remember; fresh sign-in links can be generated any time.
+developer: DeusMozart
+website: https://github.com/DeusMozart/umbrel-app-store
+submitter: DeusMozart
+submission: https://github.com/DeusMozart/umbrel-app-store
+repo: https://github.com/DeusMozart/umbrel-app-store
+support: https://github.com/DeusMozart/umbrel-app-store/issues
+gallery: []
+releaseNotes: >-
+  First release: self-installing WordPress with the MainWP Dashboard preinstalled — add sites, one-click login, plugin/theme management and bulk updates from one dashboard.
+dependencies: []
+path: "/wp-admin"
+defaultUsername: ""
+defaultPassword: ""
+port: 8602
+icon: https://raw.githubusercontent.com/DeusMozart/umbrel-app-store/main/mozart-wp-command/icon.svg
+storage:
+  dataRoot: data

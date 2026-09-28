@@ -1,0 +1,131 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      # Format: <app-id>_<docker-service-name>_1
+      APP_HOST: mozart-wp-command_app_1
+      APP_PORT: 80
+      PROXY_AUTH_ADD: "false"
+
+  # Repairs ownership of the app data root on every boot: umbrel creates the
+  # bind-source directories but they can end up owned by root, which breaks
+  # the uid-1000 wordpress + mariadb services on first install.
+  init:
+    image: busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        chown -R 1000:1000 /data 2>/dev/null || true
+        exec tail -f /dev/null
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    restart: unless-stopped
+
+  # WordPress web service — the MainWP Dashboard runs here.
+  app:
+    image: wordpress:7.1.2@sha256:bb209c8ab111746f22f578b870d866eb3f3da6028998a608202b706675450ecd
+    user: "1000:1000"
+    environment:
+      - WORDPRESS_DB_HOST=mozart-wp-command_db_1
+      - WORDPRESS_DB_NAME=wordpress
+      - WORDPRESS_DB_USER=umbrel
+      - WORDPRESS_DB_PASSWORD=umbrelwordpress
+    # Lets the dashboard reach the other WP tiles at http://umbrel.local:<port>:
+    # Docker's host-gateway resolves the name to the host, where umbrelOS serves
+    # the LAN app ports.
+    extra_hosts:
+      - "umbrel.local:host-gateway"
+    volumes:
+      - ${APP_DATA_DIR}/data/wordpress:/var/www/html
+    restart: on-failure
+    depends_on:
+      - init
+      - db
+
+  # MariaDB database service.
+  db:
+    image: mariadb:11.5.2@sha256:2d50fe0f77dac919396091e527e5e148a9de690e58f32875f113bef6506a17f5
+    user: "1000:1000"
+    environment:
+      - MYSQL_ROOT_PASSWORD=umbrelwordpressroot
+      - MYSQL_DATABASE=wordpress
+      - MYSQL_USER=umbrel
+      - MYSQL_PASSWORD=umbrelwordpress
+    volumes:
+      - ${APP_DATA_DIR}/data/db:/var/lib/mysql
+    restart: on-failure
+    depends_on:
+      - init
+
+  # WP-CLI companion: installs the site on first boot, then idles so you can
+  # exec into it (Settings -> Open terminal -> cli) and run wp commands.
+  # Also prints [net-test] lines: a self-check of whether this container can
+  # reach the other WordPress tiles published on this Umbrel.
+  cli:
+    image: wordpress:cli-php8.3@sha256:0f7f0f895c379bb7b60b8f09562811084ac0424d544747f76d95cc785feccac0
+    user: "1000:1000"
+    environment:
+      - HOME=/var/www/html/.wpcli
+      - WORDPRESS_DB_HOST=mozart-wp-command_db_1
+      - WORDPRESS_DB_NAME=wordpress
+      - WORDPRESS_DB_USER=umbrel
+      - WORDPRESS_DB_PASSWORD=umbrelwordpress
+      - SITE_URL=http://umbrel.local:8602
+      - SITE_TITLE=WP Command
+      - ADMIN_USER=mozart
+      - ADMIN_EMAIL=admin@umbrel.local
+    volumes:
+      - ${APP_DATA_DIR}/data/wordpress:/var/www/html
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p "$$HOME"
+        # 1) wait for the site files to land (the app service copies core files on start)
+        n=0
+        until [ -f /var/www/html/wp-load.php ] || [ "$$n" -ge 100 ]; do n=$$((n+1)); sleep 3; done
+        # 2) wait for the database to actually accept connections (wp-config alone is not enough)
+        n=0
+        until php -r 'exit(@mysqli_connect(getenv("WORDPRESS_DB_HOST"),getenv("WORDPRESS_DB_USER"),getenv("WORDPRESS_DB_PASSWORD")) ? 0 : 1);' 2>/dev/null || [ "$$n" -ge 60 ]; do n=$$((n+1)); sleep 3; done
+        # 3) one-time install, retrying until the database answers
+        if ! wp core is-installed 2>/dev/null; then
+          PASS=$$(tr -dc 'a-z0-9' </dev/urandom | head -c 24)
+          n=0
+          until wp core install --url="$$SITE_URL" --title="$$SITE_TITLE" --admin_user="$$ADMIN_USER" --admin_password="$$PASS" --admin_email="$$ADMIN_EMAIL" --skip-email || [ "$$n" -ge 30 ]; do
+            n=$$((n+1))
+            echo "[bootstrap] Waiting for the database... (attempt $$n)"
+            sleep 5
+          done
+          wp option update blog_public 0 >/dev/null 2>&1 || true
+          wp config set WP_ENVIRONMENT_TYPE local >/dev/null 2>&1 || true
+          wp rewrite structure '/%postname%/' --hard >/dev/null 2>&1 || true
+          if wp core is-installed 2>/dev/null; then
+            echo "[bootstrap] Site ready: $$SITE_URL (admin: $$ADMIN_USER / $$PASS)"
+          else
+            echo "[bootstrap] ERROR: WordPress install did not complete"
+          fi
+        fi
+        # 4) MainWP Dashboard plugin — the fleet management UI.
+        n=0
+        until wp plugin install mainwp --activate >/dev/null 2>&1 || [ "$$n" -ge 12 ]; do n=$$((n+1)); sleep 5; done
+        if wp plugin is-active mainwp >/dev/null 2>&1; then echo "[bootstrap] MainWP dashboard plugin active"; else echo "[bootstrap] WARNING: MainWP plugin not active"; fi
+        # 5) reachability self-checks (informational, never fatal)
+        echo "[net-test] dns umbrel.local -> $$(php -r 'echo gethostbyname("umbrel.local");' 2>&1)"
+        echo "[net-test] dns sandbox-proxy -> $$(php -r 'echo gethostbyname("mozart-wp-sandbox_app_proxy_1");' 2>&1)"
+        echo "[net-test] hop umbrel.local:8601 -> $$(php -r '$$o=@file_get_contents("http://umbrel.local:8601/wp-login.php", false, stream_context_create(["http"=>["timeout"=>8,"follow_location"=>0,"ignore_errors"=>true]])); echo $$o===false ? ("ERR ".error_get_last()["message"]) : ($$http_response_header[0] ?? "no-status");' 2>&1)"
+        echo "[net-test] hop 192.168.31.97:8601 -> $$(php -r '$$o=@file_get_contents("http://192.168.31.97:8601/wp-login.php", false, stream_context_create(["http"=>["timeout"=>8,"follow_location"=>0,"ignore_errors"=>true]])); echo $$o===false ? ("ERR ".error_get_last()["message"]) : ($$http_response_header[0] ?? "no-status");' 2>&1)"
+        echo "[net-test] hop sandbox-proxy:80 -> $$(php -r '$$o=@file_get_contents("http://mozart-wp-sandbox_app_proxy_1/wp-login.php", false, stream_context_create(["http"=>["timeout"=>8,"follow_location"=>0,"ignore_errors"=>true]])); echo $$o===false ? ("ERR ".error_get_last()["message"]) : ($$http_response_header[0] ?? "no-status");' 2>&1)"
+        echo "[net-test] full umbrel.local:8601 -> $$(php -r '$$o=@file_get_contents("http://umbrel.local:8601/wp-login.php", false, stream_context_create(["http"=>["timeout"=>10]])); echo $$o===false ? ("ERR ".error_get_last()["message"]) : ("OK ".strlen($$o)." bytes");' 2>&1)"
+        # 6) magic sign-in support (package lives inside the site volume at $HOME, survives restarts)
+        n=0
+        until wp package install aaemnnosttv/wp-cli-login-command >/dev/null 2>&1 || [ "$$n" -ge 12 ]; do n=$$((n+1)); sleep 5; done
+        wp login install --activate >/dev/null 2>&1 || true
+        LINK=$$(wp login create "$$ADMIN_USER" --url-only --expires=86400 2>/dev/null)
+        echo "[magic-link] $$LINK"
+        tail -f /dev/null
+    restart: unless-stopped
+    depends_on:
+      - init
+      - db
+      - app

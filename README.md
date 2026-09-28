@@ -22,6 +22,12 @@ A self-contained WordPress site (WordPress 7.1.2 + MariaDB 11.5) for hosting loc
 
 Self-installing on first boot: it creates its database, admin account and permalinks, then prints a one-time magic sign-in link into its logs. A bundled WP-CLI companion service handles in-app maintenance, and the optional **Backups Folder** mount gives the app read-only access to a folder on your Umbrel for importing backups.
 
+### WP Command
+
+The command center for the WordPress copies on your Umbrel: WordPress with the [MainWP](https://mainwp.com) Dashboard preinstalled, self-installing like WP Sandbox.
+
+Add each site by address and admin login — MainWP installs its companion plugin and then gives you one-click sign-in, plugin/theme management, and bulk updates across the whole fleet, all from one dashboard.
+
 ## Install
 
 1. Open **App Store** on your Umbrel
