@@ -14,7 +14,7 @@ environment variables (Settings -> Advanced -> environment variables):
     QUIET_HOURS        e.g. "1-8" or "22-6"; "off" (default) disables
     LOG_LEVEL          default INFO
 
-Commands: /summarize /catchup /chime /persona /botstatus
+Commands: /summarize /summary /catchup /chime /persona /memory /botstatus
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 CSRF_TOKEN = uuid.uuid4().hex[:24]  # guards dashboard POSTs; rotates on restart
 LOG = logging.getLogger("bot")
 
@@ -97,6 +97,12 @@ Format (plain text, no markdown headings, no bold):
 - Then 3-8 short bullets, each starting with "- ", covering what was discussed, decided, and asked.
 Mention usernames when it matters who said or asked what. Be concrete: names, numbers, decisions.
 Skip filler and pleasantries. If the stretch is mostly banter, say so in a short bullet."""
+
+SNIPPET_SYSTEM = """You write quick public recaps of Discord conversations.
+Reply with ONLY the recap: 2-4 short sentences, casual and natural. No bullet lists, no
+headings, no preamble like "Here's a summary" -- just the recap itself. Cover the gist,
+any decisions or plans, and anything left unresolved. Use names when it matters. If the
+stretch was mostly banter, say so in one line."""
 
 CATCHUP_NOTE = "Summarize what {name} missed in #{channel} since their last message there."
 CATCHUP_FALLBACK = (
@@ -819,7 +825,7 @@ async def run_summary(interaction: discord.Interaction, rows, title: str,
         rest = rest[1900:]
 
 
-@tree.command(name="summarize", description="Summarize the recent conversation in this channel")
+@tree.command(name="summarize", description="A detailed summary of the recent conversation (use /summary for a quick TL;DR)")
 @app_commands.describe(count="How many recent messages to summarize (10-500, default 120)")
 async def summarize(interaction: discord.Interaction, count: int = 120):
     if not interaction.guild:
@@ -840,6 +846,44 @@ async def summarize(interaction: discord.Interaction, count: int = 120):
     await run_summary(interaction, rows,
                       f"Summary \u2014 #{(interaction.channel.name or 'channel')} (last {len(rows)})",
                       SUMMARY_SYSTEM)
+
+
+@tree.command(name="summary", description="Post a quick TL;DR of the recent chat for everyone here")
+@app_commands.describe(count="How many recent messages to recap (10-300, default 100)")
+async def summary(interaction: discord.Interaction, count: int = 100):
+    if not interaction.guild:
+        await interaction.response.send_message("Use this in a server channel.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    limit = max(10, min(300, count))
+    rows = []
+    try:
+        async for m in interaction.channel.history(limit=limit):
+            row = msg_to_rowdict(m)
+            if row and (not m.author.bot or m.author.id == bot.user.id):
+                rows.append(row)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"Couldn't read history: {e}")
+        return
+    rows.reverse()
+    transcript = build_transcript(rows, max_chars=8000)
+    if len(transcript) < 60:
+        await interaction.followup.send("Not enough recent conversation for a recap yet.")
+        return
+    try:
+        text = await llm_chat(SNIPPET_SYSTEM, f"Conversation:\n\n{transcript}",
+                              max_tokens=700, temperature=0.4,
+                              session=f"discord-{interaction.channel.id}")
+    except LLMError as e:
+        await interaction.followup.send(f"Can't do a recap right now: {e}")
+        return
+    state.summaries_run += 1
+    if not text:
+        await interaction.followup.send("The model returned nothing. Try again in a moment.")
+        return
+    await interaction.followup.send(
+        f"**TL;DR** \u2014 {text[:1800]}",
+        allowed_mentions=discord.AllowedMentions.none())
 
 
 @tree.command(name="catchup", description="What happened here since you last spoke?")

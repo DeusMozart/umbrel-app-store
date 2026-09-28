@@ -8,6 +8,7 @@ and can chime in on its own — hosted on your Umbrel.
 | Command | What it does |
 | --- | --- |
 | `/summarize [count]` | Summarizes the last N messages (default 120, max 500) of the current channel. |
+| `/summary [count]` | A quick public TL;DR of the last N messages (default 100, max 300) — posted for everyone in the channel. |
 | `/catchup` | Summarizes everything that happened in the channel since *your* last message. |
 | `/chime on` / `off` | Enables/disables the bot joining this channel's conversation spontaneously (needs Manage Server). |
 | `/chime mood chill\|normal\|chatty` | How chatty it should be. normal ≈ up to 8 messages/day, min 12 min apart. |
@@ -71,7 +72,7 @@ Most settings can also be changed live from the [dashboard](#settings-dashboard)
 
 ## Privacy & behavior notes
 
-- Messages are only stored for channels where chime-in is on, capped per channel and pruned after 7 days. `/summarize` and `/catchup` read live from Discord and work anywhere the bot can read history, even with chime off.
+- Messages are only stored for channels where chime-in is on, capped per channel and pruned after 7 days. `/summarize`, `/summary` and `/catchup` read live from Discord and work anywhere the bot can read history, even with chime off.
 - Spontaneous messages respect per-channel cooldown, a daily cap, and quiet hours. If the model has nothing useful to add it stays silent (it's instructed to prefer SILENT).
 - The status dashboard is at `http://umbrel.local:8095` (JSON: `/status.json`, health: `/healthz`).
 
