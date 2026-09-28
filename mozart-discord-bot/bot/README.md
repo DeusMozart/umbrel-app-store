@@ -12,7 +12,8 @@ and can chime in on its own — hosted on your Umbrel.
 | `/chime on` / `off` | Enables/disables the bot joining this channel's conversation spontaneously (needs Manage Server). |
 | `/chime mood chill\|normal\|chatty` | How chatty it should be. normal ≈ up to 8 messages/day, min 12 min apart. |
 | `/chime status` | Current chime settings and activity for this channel. |
-| `/persona show` / `/persona set <text>` | The bot's voice and personality (up to 1500 chars). |
+| `/persona show` / `/persona set <text>` / `/persona reset` | The bot's voice for this server (up to 1500 chars). |
+| `/memory add <text>` / `list` / `forget <id>` / `clear` | Facts the bot should remember about this community — it weaves them into its chime-ins and replies (up to 60 notes). |
 | `/botstatus` | Health check: connection, counters, LLM endpoint, last error. |
 
 Mentions always get a reply, whether or not chime-in is enabled for the channel.

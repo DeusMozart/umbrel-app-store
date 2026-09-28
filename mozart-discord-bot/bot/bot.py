@@ -29,6 +29,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -36,7 +37,7 @@ import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 LOG = logging.getLogger("bot")
 
 # --------------------------------------------------------------------------
@@ -124,6 +125,12 @@ CREATE TABLE IF NOT EXISTS channels (
   mood TEXT NOT NULL DEFAULT 'normal'
 );
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS memories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_ts REAL NOT NULL
+);
 """
 
 
@@ -224,6 +231,48 @@ class DB:
                 "INSERT INTO kv (k, v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
                 (key, value))
             self.conn.commit()
+
+    def del_kv(self, key):
+        with self._lock:
+            self.conn.execute("DELETE FROM kv WHERE k = ?", (key,))
+            self.conn.commit()
+
+    def add_memory(self, guild_id, text):
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO memories (guild_id, text, created_ts) VALUES (?,?,?)",
+                (guild_id, text, time.time()))
+            self.conn.commit()
+
+    def list_memories(self, guild_id):
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT * FROM memories WHERE guild_id = ? ORDER BY id",
+                (guild_id,)).fetchall()]
+
+    def remove_memory(self, guild_id, mem_id) -> bool:
+        with self._lock:
+            cur = self.conn.execute(
+                "DELETE FROM memories WHERE guild_id = ? AND id = ?", (guild_id, mem_id))
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def clear_memories(self, guild_id) -> int:
+        with self._lock:
+            cur = self.conn.execute(
+                "DELETE FROM memories WHERE guild_id = ?", (guild_id,))
+            self.conn.commit()
+            return cur.rowcount
+
+    def count_memories(self, guild_id=None):
+        with self._lock:
+            if guild_id is None:
+                row = self.conn.execute("SELECT COUNT(*) c FROM memories").fetchone()
+            else:
+                row = self.conn.execute(
+                    "SELECT COUNT(*) c FROM memories WHERE guild_id = ?",
+                    (guild_id,)).fetchone()
+        return row["c"]
 
 
 # --------------------------------------------------------------------------
@@ -368,7 +417,7 @@ class LLMError(Exception):
 
 
 async def llm_chat(system: str, user: str, max_tokens: int = 350,
-                   temperature: float = 0.7) -> str:
+                   temperature: float = 0.7, session: str | None = None) -> str:
     if not LLM_API_KEY:
         raise LLMError("LLM_API_KEY is not set \u2014 add it in the app's Settings \u2192 "
                        "Advanced \u2192 environment variables.")
@@ -383,29 +432,63 @@ async def llm_chat(system: str, user: str, max_tokens: int = 350,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            resp = await client.post(
-                f"{LLM_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
-                json=payload)
-    except httpx.HTTPError as e:
-        state.llm_last_error = f"network: {e}"
-        raise LLMError(f"Could not reach the LLM endpoint: {e}") from e
-    if resp.status_code != 200:
-        state.llm_last_error = f"HTTP {resp.status_code}: {resp.text[:160]}"
-        raise LLMError(f"LLM endpoint returned HTTP {resp.status_code}: {resp.text[:160]}")
-    try:
-        text = resp.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        state.llm_last_error = f"unexpected response: {str(resp.text)[:160]}"
-        raise LLMError(f"Unexpected LLM response: {str(resp.text)[:160]}") from e
-    state.llm_last_error = ""
-    return (text or "").strip()
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}"}
+    if "opencode" in LLM_BASE_URL:
+        # OpenCode Zen/Go require an affinity key on every request (HTTP 400
+        # MissingSessionID without it); a stable per-channel key keeps the
+        # upstream prompt cache warm.
+        headers["x-opencode-session"] = session or f"oneshot-{uuid.uuid4().hex[:16]}"
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.post(
+                    f"{LLM_BASE_URL}/chat/completions",
+                    headers=headers,
+                    json=payload)
+        except httpx.HTTPError as e:
+            state.llm_last_error = f"network: {e}"
+            raise LLMError(f"Could not reach the LLM endpoint: {e}") from e
+        if resp.status_code != 200:
+            state.llm_last_error = f"HTTP {resp.status_code}: {resp.text[:160]}"
+            raise LLMError(f"LLM endpoint returned HTTP {resp.status_code}: {resp.text[:160]}")
+        try:
+            text = resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            state.llm_last_error = f"unexpected response: {str(resp.text)[:160]}"
+            raise LLMError(f"Unexpected LLM response: {str(resp.text)[:160]}") from e
+        text = (text or "").strip()
+        if text:
+            state.llm_last_error = ""
+            return text
+        if attempts == 1:
+            # Reasoning models (e.g. deepseek-v4.1-flash) count hidden reasoning
+            # tokens against max_tokens and can burn the whole budget before
+            # emitting content \u2014 retry once with generous headroom.
+            payload["max_tokens"] = max_tokens * 2 + 256
+            continue
+        state.llm_last_error = "empty reply from LLM"
+        raise LLMError("The LLM returned an empty reply.")
 
 
-def persona() -> str:
+def persona(guild_id=None) -> str:
+    if guild_id is not None:
+        v = db.get_kv(f"persona:{guild_id}")
+        if v:
+            return v
     return db.get_kv("persona", DEFAULT_PERSONA)
+
+
+def memory_block(guild_id) -> str:
+    """Facts the community taught the bot, for the system prompt ('' when none)."""
+    if guild_id is None:
+        return ""
+    mems = db.list_memories(str(guild_id))[:40]
+    if not mems:
+        return ""
+    lines = "\n".join(f"- {m['text']}" for m in mems)
+    return f"Things you know about this community (from memory):\n{lines}\n\n"
 
 
 # --------------------------------------------------------------------------
@@ -540,16 +623,18 @@ async def handle_mention(message: discord.Message):
     rows.reverse()
     transcript = build_transcript(rows, max_chars=5000)
 
-    system = (f"You are {bot.user.display_name}, a member of this Discord community.\n"
-              f"{persona()}\n\n"
-              f"You were just mentioned in #{getattr(message.channel, 'name', '?')}. "
-              f"Reply helpfully and briefly \u2014 1-3 short sentences, casual, no markdown. "
-              f"Use the recent conversation below as context. Don't prefix with your name, "
-              f"don't announce that you're a bot, and don't summarize unless asked.")
+    system = (memory_block(message.guild.id)
+              + f"You are {bot.user.display_name}, a member of this Discord community.\n"
+                f"{persona(message.guild.id)}\n\n"
+                f"You were just mentioned in #{getattr(message.channel, 'name', '?')}. "
+                f"Reply helpfully and briefly \u2014 1-3 short sentences, casual, no markdown. "
+                f"Use the recent conversation below as context. Don't prefix with your name, "
+                f"don't announce that you're a bot, and don't summarize unless asked.")
     prompt = (f"Recent messages:\n\n{transcript}\n\n"
               f"{message.author.display_name} just wrote: {message.clean_content}\n\nReply to them.")
     try:
-        reply = clean_reply(await llm_chat(system, prompt, max_tokens=220, temperature=0.8))
+        reply = clean_reply(await llm_chat(system, prompt, max_tokens=500, temperature=0.8,
+                                           session=f"discord-{cid}"))
     except LLMError as e:
         LOG.warning("mention reply failed: %s", e)
         try:
@@ -603,12 +688,14 @@ async def maybe_chime(message: discord.Message):
     if len(rows) < 4:
         return
     transcript = build_transcript(rows, max_chars=6000)
-    system = CHIME_SYSTEM.format(persona=persona(),
-                                 channel=getattr(message.channel, "name", "?"))
+    system = memory_block(message.guild.id) + CHIME_SYSTEM.format(
+        persona=persona(message.guild.id),
+        channel=getattr(message.channel, "name", "?"))
     prompt = (f"Recent messages in #{getattr(message.channel, 'name', '?')}:\n\n{transcript}\n\n"
               f"Should you chime in? Reply with SILENT or the message text only.")
     try:
-        text = await llm_chat(system, prompt, max_tokens=160, temperature=0.85)
+        text = await llm_chat(system, prompt, max_tokens=400, temperature=0.85,
+                              session=f"discord-{cid}")
     except LLMError as e:
         LOG.warning("chime evaluation failed: %s", e)
         state.last_eval[cid] = now + 600  # back off on errors
@@ -639,7 +726,8 @@ async def run_summary(interaction: discord.Interaction, rows, title: str,
         return
     user = f"{prompt_prefix}Conversation:\n\n{transcript}"
     try:
-        text = await llm_chat(system, user, max_tokens=900, temperature=0.35)
+        text = await llm_chat(system, user, max_tokens=1400, temperature=0.35,
+                              session=f"discord-{interaction.channel.id}")
     except LLMError as e:
         await interaction.followup.send(f"Can't summarize right now: {e}")
         return
@@ -818,12 +906,15 @@ persona_group = app_commands.Group(
     default_permissions=discord.Permissions(manage_guild=True))
 
 
-@persona_group.command(name="show", description="Show the current persona")
+@persona_group.command(name="show", description="Show the bot's persona for this server")
 async def persona_show(interaction: discord.Interaction):
-    await interaction.response.send_message(f"```\n{persona()[:1700]}\n```", ephemeral=True)
+    gid = interaction.guild.id if interaction.guild else None
+    src = "set for this server" if gid and db.get_kv(f"persona:{gid}") else "default"
+    await interaction.response.send_message(
+        f"Persona ({src}):\n```\n{persona(gid)[:1700]}\n```", ephemeral=True)
 
 
-@persona_group.command(name="set", description="Set the bot's persona (voice, style, quirks)")
+@persona_group.command(name="set", description="Set the bot's persona for this server (voice, style, quirks)")
 @app_commands.describe(text="The new persona text (up to 1500 characters)")
 async def persona_set(interaction: discord.Interaction, text: str):
     if not allowed(interaction):
@@ -833,15 +924,99 @@ async def persona_set(interaction: discord.Interaction, text: str):
         await interaction.response.send_message("That's over 1500 characters \u2014 trim it down.",
                                                 ephemeral=True)
         return
-    db.set_kv("persona", text.strip())
-    await interaction.response.send_message("Persona updated. It applies to all chime-ins and replies.",
-                                            ephemeral=True)
+    db.set_kv(f"persona:{interaction.guild.id}", text.strip())
+    await interaction.response.send_message(
+        "Persona updated for this server. It applies to chime-ins and replies here.",
+        ephemeral=True)
+
+
+@persona_group.command(name="reset", description="Reset this server's persona back to the default")
+async def persona_reset(interaction: discord.Interaction):
+    if not allowed(interaction):
+        await deny(interaction)
+        return
+    db.del_kv(f"persona:{interaction.guild.id}")
+    await interaction.response.send_message("Back to the default persona.", ephemeral=True)
+
+
+memory_group = app_commands.Group(
+    name="memory", description="Things the bot remembers about this community",
+    default_permissions=discord.Permissions(manage_guild=True))
+
+
+@memory_group.command(name="add", description="Teach the bot a fact it should remember here")
+@app_commands.describe(text="e.g. 'Zak leads rallies in Kingshot, Kingdom 259'")
+async def memory_add(interaction: discord.Interaction, text: str):
+    if not allowed(interaction):
+        await deny(interaction)
+        return
+    text = " ".join(text.split())[:400]
+    if not text:
+        await interaction.response.send_message("Empty note \u2014 nothing saved.", ephemeral=True)
+        return
+    if db.count_memories(str(interaction.guild.id)) >= 60:
+        await interaction.response.send_message(
+            "Memory is full (60 notes). Check `/memory list` and free space with `/memory forget`.",
+            ephemeral=True)
+        return
+    db.add_memory(str(interaction.guild.id), text)
+    await interaction.response.send_message(f"Got it \u2014 remembering: {text}", ephemeral=True)
+
+
+@memory_group.command(name="list", description="List what the bot remembers about this server")
+async def memory_list(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("Use this in a server.", ephemeral=True)
+        return
+    mems = db.list_memories(str(interaction.guild.id))
+    if not mems:
+        await interaction.response.send_message(
+            "Nothing in memory yet. Add notes with `/memory add`.", ephemeral=True)
+        return
+    chunks, buf = [], f"**Memory ({len(mems)} notes)**\n"
+    for m in mems:
+        line = f"`{m['id']}.` {m['text'][:300]}\n"
+        if len(buf) + len(line) > 1900:
+            chunks.append(buf)
+            buf = ""
+        buf += line
+    chunks.append(buf)
+    await interaction.response.send_message(chunks[0], ephemeral=True)
+    for c in chunks[1:8]:
+        await interaction.followup.send(c, ephemeral=True)
+
+
+@memory_group.command(name="forget", description="Remove one memory note by its number")
+@app_commands.describe(mem_id="The number shown by /memory list")
+async def memory_forget(interaction: discord.Interaction, mem_id: int):
+    if not allowed(interaction):
+        await deny(interaction)
+        return
+    if db.remove_memory(str(interaction.guild.id), mem_id):
+        await interaction.response.send_message(f"Forgotten: note {mem_id}.", ephemeral=True)
+    else:
+        await interaction.response.send_message(
+            f"No note with id {mem_id} here \u2014 check `/memory list`.", ephemeral=True)
+
+
+@memory_group.command(name="clear", description="Wipe ALL memory notes for this server")
+async def memory_clear(interaction: discord.Interaction):
+    if not allowed(interaction):
+        await deny(interaction)
+        return
+    n = db.clear_memories(str(interaction.guild.id))
+    await interaction.response.send_message(f"Cleared {n} notes from memory.", ephemeral=True)
+
+
+for _group in (chime_group, persona_group, memory_group):
+    tree.add_command(_group)
 
 
 @tree.command(name="botstatus", description="Bot health: connection, memory, LLM, counters")
 async def botstatus(interaction: discord.Interaction):
     ok = bot.is_ready()
     total, _ = db.counts()
+    mems = db.count_memories(str(interaction.guild.id)) if interaction.guild else 0
     chans = db.all_channels()
     mine = [c for c in chans if interaction.guild and c["guild_id"] == str(interaction.guild.id)]
     active = [c["name"] for c in mine if c["chime"]]
@@ -850,8 +1025,8 @@ async def botstatus(interaction: discord.Interaction):
         f"\u00b7 v{VERSION}\n"
         f"Guilds: {len(bot.guilds)} \u00b7 chime channels here: "
         f"{len(active) if active else 'none'}{(' (' + ', '.join('#' + n for n in active[:8]) + ')') if active else ''}\n"
-        f"Stored messages: {total} \u00b7 chimes sent: {state.chimes_sent} \u00b7 "
-        f"summaries: {state.summaries_run}\n"
+        f"Stored messages: {total} \u00b7 memory notes: {mems} \u00b7 "
+        f"chimes sent: {state.chimes_sent} \u00b7 summaries: {state.summaries_run}\n"
         f"LLM: `{LLM_MODEL}` @ `{LLM_BASE_URL}` \u00b7 API key "
         f"{'set' if LLM_API_KEY else '**missing**'}"
         + (f"\nLast LLM error: `{state.llm_last_error[:160]}`" if state.llm_last_error else ""),
@@ -894,6 +1069,7 @@ footer { color:#5c6170; font-size:12px; margin-top:34px; }
 def status_payload() -> dict:
     snap = state.snapshot()
     total, per = db.counts()
+    memories_total = db.count_memories()
     channels = []
     for c in db.all_channels():
         channels.append({
@@ -907,6 +1083,7 @@ def status_payload() -> dict:
         "uptime": human_delta(snap["uptime"]),
         "guilds": snap["guilds"],
         "messages_stored": total,
+        "memories_total": memories_total,
         "messages_seen": snap["messages_seen"],
         "chimes_sent": snap["chimes_sent"],
         "summaries_run": snap["summaries_run"],
@@ -954,6 +1131,7 @@ def render_html() -> str:
   <div class="grid">
     <div class="card"><div class="k">Guilds</div><div class="v">{len(p['guilds'])}</div></div>
     <div class="card"><div class="k">Stored messages</div><div class="v">{p['messages_stored']}</div></div>
+    <div class="card"><div class="k">Memory notes</div><div class="v">{p['memories_total']}</div></div>
     <div class="card"><div class="k">Chimes sent</div><div class="v">{p['chimes_sent']}</div></div>
     <div class="card"><div class="k">Summaries</div><div class="v">{p['summaries_run']}</div></div>
   </div>
@@ -1039,6 +1217,13 @@ def run_check() -> int:
     assert "test message 4" in transcript
     print("transcript: OK")
     print(transcript)
+    db.add_memory("0", "self-check note")
+    mems = db.list_memories("0")
+    assert len(mems) == 1 and mems[0]["text"] == "self-check note"
+    assert db.count_memories("0") == 1
+    assert db.remove_memory("0", mems[0]["id"])
+    db.clear_memories("0")
+    print("memory store: OK")
     db.conn.execute("DELETE FROM messages WHERE channel_id = '999'")
     db.conn.commit()
     start_status_server()
