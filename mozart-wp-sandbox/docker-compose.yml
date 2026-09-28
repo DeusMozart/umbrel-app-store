@@ -75,18 +75,33 @@ services:
     command:
       - |
         mkdir -p "$$HOME"
-        # wait for the site files + wp-config to exist (the app service writes them once the db answers)
-        until wp core version >/dev/null 2>&1; do sleep 3; done
+        # 1) wait for the site files to land (the app service copies core files on start)
+        n=0
+        until [ -f /var/www/html/wp-load.php ] || [ "$$n" -ge 100 ]; do n=$$((n+1)); sleep 3; done
+        # 2) wait for the database to actually accept connections (wp-config alone is not enough)
+        n=0
+        until php -r 'exit(@mysqli_connect(getenv("WORDPRESS_DB_HOST"),getenv("WORDPRESS_DB_USER"),getenv("WORDPRESS_DB_PASSWORD")) ? 0 : 1);' 2>/dev/null || [ "$$n" -ge 60 ]; do n=$$((n+1)); sleep 3; done
+        # 3) one-time install, retrying until the database answers
         if ! wp core is-installed 2>/dev/null; then
           PASS=$$(tr -dc 'a-z0-9' </dev/urandom | head -c 24)
-          wp core install --url="$$SITE_URL" --title="$$SITE_TITLE" --admin_user="$$ADMIN_USER" --admin_password="$$PASS" --admin_email="$$ADMIN_EMAIL" --skip-email
-          wp option update blog_public 0
+          n=0
+          until wp core install --url="$$SITE_URL" --title="$$SITE_TITLE" --admin_user="$$ADMIN_USER" --admin_password="$$PASS" --admin_email="$$ADMIN_EMAIL" --skip-email || [ "$$n" -ge 30 ]; do
+            n=$$((n+1))
+            echo "[bootstrap] Waiting for the database... (attempt $$n)"
+            sleep 5
+          done
+          wp option update blog_public 0 >/dev/null 2>&1 || true
           wp config set WP_ENVIRONMENT_TYPE local >/dev/null 2>&1 || true
           wp rewrite structure '/%postname%/' --hard >/dev/null 2>&1 || true
-          echo "[bootstrap] Site ready: $$SITE_URL (admin: $$ADMIN_USER / $$PASS)"
+          if wp core is-installed 2>/dev/null; then
+            echo "[bootstrap] Site ready: $$SITE_URL (admin: $$ADMIN_USER / $$PASS)"
+          else
+            echo "[bootstrap] ERROR: WordPress install did not complete"
+          fi
         fi
-        # magic sign-in support (package lives inside the site volume at $HOME, survives restarts)
-        wp package install aaemnnosttv/wp-cli-login-command >/dev/null 2>&1 || true
+        # 4) magic sign-in support (package lives inside the site volume at $HOME, survives restarts)
+        n=0
+        until wp package install aaemnnosttv/wp-cli-login-command >/dev/null 2>&1 || [ "$$n" -ge 12 ]; do n=$$((n+1)); sleep 5; done
         wp login install --activate >/dev/null 2>&1 || true
         LINK=$$(wp login create "$$ADMIN_USER" --url-only --expires=86400 2>/dev/null)
         echo "[magic-link] $$LINK"
