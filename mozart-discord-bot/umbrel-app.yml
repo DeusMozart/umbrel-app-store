@@ -2,7 +2,7 @@ manifestVersion: 1.1
 id: mozart-discord-bot
 category: ai
 name: Discord Bot
-version: "1.6.0"
+version: "1.7.0"
 tagline: A community bot that summarizes chats — and chimes in on its own
 description: >-
   Lets a Discord bot live in your server with a memory of the conversation.
@@ -14,7 +14,7 @@ description: >-
   • /persona — shape its voice (per server).
   • /memory — teach it facts about your community; it weaves them into its replies.
   • /brain — its own long-term memory (Mnemosyne): it remembers every conversation per server, consolidates old memories into episode summaries over time, recalls what's relevant when it replies, and can be paused or browsed from the dashboard.
-  • Dashboard — pick the model (live list + connection test), set quiet hours, tune each channel, persona and memory, no restart needed.
+  • Dashboard — pick the model (live list + connection test) and reasoning on/off, set quiet hours, tune each channel, persona and memory, no restart needed.
   • soul.md — the bot's personality lives in a file you can edit right in the dashboard; every chime-in and reply follows it.
 
   Works with any OpenAI-compatible LLM endpoint, so you can point it at OpenCode Zen, OpenAI, OpenRouter or anything else that speaks the same API. Add your Discord bot token and LLM API key under Settings → Advanced → environment variables.
@@ -26,7 +26,7 @@ repo: https://github.com/DeusMozart/umbrel-app-store
 support: https://github.com/DeusMozart/umbrel-app-store/issues
 gallery: []
 releaseNotes: >-
-  1.6.0 — long-term memory: the bot gets its own Mnemosyne brain, one per server and fully local. It remembers every conversation, recalls what's relevant when it replies or chimes in, consolidates old memories into episode summaries over time, and is browsable/searchable/pausable from the dashboard or /brain. 1.5.0 — replies to the bot's messages now always trigger a response, and chime-in was made livelier (joins more often, still leashed by cooldowns). 1.4.0 — /summary: a quick public TL;DR of the recent chat, posted for everyone. 1.3.0 — soul.md: a personality file the bot lives by, editable live from the dashboard, with per-server personas layered on top. 1.2.0 — settings dashboard: live model picker with connection test, quiet hours, per-server editing. 1.1.0 — /memory + per-server personas. 1.0.0 — first release.
+  1.7.0 — non-reasoning by default: replies skip the model's hidden thinking tokens (faster, cheaper), with a Reasoning switch in the dashboard if you want the thinking back. 1.6.0 — long-term memory: the bot gets its own Mnemosyne brain, one per server and fully local. It remembers every conversation, recalls what's relevant when it replies or chimes in, consolidates old memories into episode summaries over time, and is browsable/searchable/pausable from the dashboard or /brain. 1.5.0 — replies to the bot's messages now always trigger a response, and chime-in was made livelier (joins more often, still leashed by cooldowns). 1.4.0 — /summary: a quick public TL;DR of the recent chat, posted for everyone. 1.3.0 — soul.md: a personality file the bot lives by, editable live from the dashboard, with per-server personas layered on top. 1.2.0 — settings dashboard: live model picker with connection test, quiet hours, per-server editing. 1.1.0 — /memory + per-server personas. 1.0.0 — first release.
 dependencies: []
 path: ""
 defaultUsername: ""

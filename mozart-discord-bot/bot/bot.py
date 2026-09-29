@@ -9,6 +9,7 @@ environment variables (Settings -> Advanced -> environment variables):
     LLM_BASE_URL       OpenAI-compatible base URL (default: OpenCode Zen)
     LLM_API_KEY        API key for that endpoint
     LLM_MODEL          Model name (default: deepseek-v4.1-flash)
+    LLM_REASONING      "on" lets the model think before answering (default "off")
     DATA_DIR           SQLite + state directory (default /data)
     PORT               Status dashboard port (default 8095)
     QUIET_HOURS        e.g. "1-8" or "22-6"; "off" (default) disables
@@ -41,7 +42,7 @@ import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 CSRF_TOKEN = uuid.uuid4().hex[:24]  # guards dashboard POSTs; rotates on restart
 LOG = logging.getLogger("bot")
 
@@ -56,6 +57,7 @@ TOKEN = env("DISCORD_BOT_TOKEN")
 LLM_BASE_URL = env("LLM_BASE_URL", "https://opencode.ai/zen/go/v1").rstrip("/")
 LLM_API_KEY = env("LLM_API_KEY")
 LLM_MODEL = env("LLM_MODEL", "deepseek-v4.1-flash")
+LLM_REASONING = env("LLM_REASONING", "off").lower()
 DATA_DIR = env("DATA_DIR", "/data")
 PORT = int(env("PORT", "8095") or "8095")
 QUIET_HOURS = env("QUIET_HOURS", "off").lower()
@@ -379,6 +381,15 @@ def esc(s) -> str:
     return html.escape(str(s), quote=True)
 
 
+def reasoning_enabled() -> bool:
+    """Is model reasoning allowed? Dashboard first (cfg:llm_reasoning), then env
+    LLM_REASONING; default off -- no hidden thinking tokens, faster + cheaper."""
+    v = str(db.get_kv("cfg:llm_reasoning") or "").strip().lower()
+    if not v:
+        v = LLM_REASONING
+    return v in ("1", "on", "true", "yes")
+
+
 def llm_settings() -> tuple[str, str, str]:
     """(base_url, model, api_key) — dashboard overrides win over env vars."""
     if db is None:
@@ -475,6 +486,9 @@ class LLMError(Exception):
     pass
 
 
+_reasoning_rejected: set = set()  # models that refused reasoning_effort:none
+
+
 async def llm_chat(system: str, user: str, max_tokens: int = 350,
                    temperature: float = 0.7, session: str | None = None) -> str:
     base, model, key = llm_settings()
@@ -498,6 +512,11 @@ async def llm_chat(system: str, user: str, max_tokens: int = 350,
         # MissingSessionID without it); a stable per-channel key keeps the
         # upstream prompt cache warm.
         headers["x-opencode-session"] = session or f"oneshot-{uuid.uuid4().hex[:16]}"
+        if not reasoning_enabled() and model not in _reasoning_rejected:
+            # Non-reasoning mode: skip the model's hidden thinking steps
+            # (they burn tokens and add latency). Models that refuse the
+            # flag are remembered and retried without it (see below).
+            payload["reasoning_effort"] = "none"
     attempts = 0
     while True:
         attempts += 1
@@ -511,6 +530,15 @@ async def llm_chat(system: str, user: str, max_tokens: int = 350,
             state.llm_last_error = f"network: {e}"
             raise LLMError(f"Could not reach the LLM endpoint: {e}") from e
         if resp.status_code != 200:
+            if resp.status_code == 400 and "reasoning_effort" in payload:
+                # This model refuses the reasoning switch (e.g. glm-5.3) --
+                # remember that and retry without it.
+                _reasoning_rejected.add(model)
+                payload.pop("reasoning_effort", None)
+                if attempts < 4:
+                    state.llm_last_error = (f"HTTP 400 (retry without reasoning "
+                                            f"flag): {resp.text[:100]}")
+                    continue
             # OpenCode Zen intermittently answers 400 "Upstream request failed:
             # Model is unavailable" for a few seconds during backend failover --
             # retry those (and classic 429/5xx) instead of eating the reply.
@@ -1678,6 +1706,7 @@ document.addEventListener('DOMContentLoaded', function () {
 def render_settings(saved: str = "", err: str = "") -> str:
     base, model, _key = llm_settings()
     key_src = llm_key_source() or "none set"
+    r_on = reasoning_enabled()
     qh = quiet_hours_spec()
     qh_val = "" if qh in ("", "off") else qh
     soul_override = db.get_kv("cfg:soul") or db.get_kv("persona")
@@ -1718,6 +1747,11 @@ def render_settings(saved: str = "", err: str = "") -> str:
       <select name="model" id="model-select">{opts}</select>
       <label>Custom model id (optional \u2014 overrides the dropdown)</label>
       <input type="text" name="model_custom" placeholder="e.g. deepseek-v4.1-flash">
+      <label>Reasoning \u2014 let the model think before answering (Zen models)</label>
+      <select name="reasoning">
+        <option value="off"{' selected' if not r_on else ''}>off \u2014 faster, cheaper (default)</option>
+        <option value="on"{' selected' if r_on else ''}>on \u2014 let it think it through</option>
+      </select>
       <label>API key</label>
       <input type="password" name="api_key" placeholder="leave blank to keep current ({esc(key_src)})" autocomplete="new-password">
       <button type="submit">Save</button>
@@ -1725,7 +1759,9 @@ def render_settings(saved: str = "", err: str = "") -> str:
       <div id="test-result" class="note"></div>
     </form>
     <div class="note">Key currently from: {esc(key_src)}. Blank fields fall back to the
-    app's environment variables.</div>
+    app's environment variables. With reasoning off, replies skip the model's hidden
+    thinking steps; models that don't support the switch (e.g. glm-5.3) fall back
+    automatically.</div>
   </div>
   <form method="post" action="/settings/llm/clear">
     <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
@@ -1975,7 +2011,8 @@ class StatusHandler(BaseHTTPRequestHandler):
             elif path == "/settings/llm/test":
                 self._json(200, self._test_llm(f))
             elif path == "/settings/llm/clear":
-                for k in ("cfg:llm_base_url", "cfg:llm_model", "cfg:llm_api_key"):
+                for k in ("cfg:llm_base_url", "cfg:llm_model", "cfg:llm_api_key",
+                          "cfg:llm_reasoning"):
                     db.del_kv(k)
                 self._redirect("/settings?saved=1")
             elif path == "/settings/soul":
@@ -2032,6 +2069,7 @@ class StatusHandler(BaseHTTPRequestHandler):
             db.del_kv("cfg:llm_model")
         if key:
             db.set_kv("cfg:llm_api_key", key)
+        db.set_kv("cfg:llm_reasoning", "1" if f.get("reasoning") == "on" else "0")
         self._redirect("/settings?saved=1")
 
     def _test_llm(self, f) -> dict:
@@ -2256,7 +2294,7 @@ def run_check() -> int:
     base_url = f"http://127.0.0.1:{PORT}"
     with urllib.request.urlopen(f"{base_url}/settings", timeout=5) as r:
         page = r.read().decode()
-    assert "Model" in page and "Soul" in page and "csrf" in page
+    assert "Model" in page and "Soul" in page and "Reasoning" in page and "csrf" in page
     with urllib.request.urlopen(f"{base_url}/settings/guild/0", timeout=5) as r:
         page = r.read().decode()
     assert "Persona" in page and "Memory" in page and "Brain" in page
@@ -2268,11 +2306,15 @@ def run_check() -> int:
             return r.read()
 
     post("/settings/llm", {"base_url": "https://example.com/v1", "model": "m",
-                           "model_custom": "", "api_key": ""})
+                           "model_custom": "", "api_key": "", "reasoning": "on"})
     assert db.get_kv("cfg:llm_base_url") == "https://example.com/v1"
     assert db.get_kv("cfg:llm_model") == "m"
+    assert db.get_kv("cfg:llm_reasoning") == "1"
+    assert reasoning_enabled()
     db.del_kv("cfg:llm_base_url")
     db.del_kv("cfg:llm_model")
+    db.del_kv("cfg:llm_reasoning")
+    assert reasoning_enabled() is False  # default: non-reasoning
     post("/settings/soul", {"text": "dashboard soul test"})
     assert db.get_kv("cfg:soul") == "dashboard soul test"
     post("/settings/soul/reset", {})
