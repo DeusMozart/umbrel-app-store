@@ -35,6 +35,7 @@ import time
 import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import pairwise
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -42,7 +43,7 @@ import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 CSRF_TOKEN = uuid.uuid4().hex[:24]  # guards dashboard POSTs; rotates on restart
 LOG = logging.getLogger("bot")
 
@@ -65,7 +66,7 @@ LOG_LEVEL = env("LOG_LEVEL", "INFO").upper()
 SOUL_FILE = env("SOUL_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "soul.md"))
 MNEMO_ENABLED = env("MNEMO_ENABLED", "1") != "0"   # Mnemosyne long-term memory
 MNEMO_DIR = os.path.join(DATA_DIR, "mnemosyne")    # one brain (SQLite) per guild
-MNEMO_MIN_SCORE = 0.25                             # recall relevance floor
+MNEMO_MIN_SCORE = 0.3                              # recall relevance floor
 MNEMO_RECALL_LIMIT = 6                             # memories injected per prompt
 MNEMO_SLEEP_MIN = 40                               # consolidate once this many wait
 MNEMO_SLEEP_GAP = 6 * 3600                         # ...and at most every 6 hours
@@ -92,14 +93,15 @@ DEFAULT_PERSONA = (
 
 CHIME_SYSTEM = """{persona}
 
-You are looking at recent messages from the #{channel} channel of a Discord server.
-You are deciding whether to chime in with a short message right now.
+You are looking at the recent messages in the #{channel} channel of a Discord server.
+Decide whether to chime in right now, as one of the regulars.
 
 Guidelines:
-- Chime in if you can add something genuinely useful, funny, warm, or if you can answer a question.
-- Reply with ONLY the message you would send: 1-2 short sentences, no markdown, no surrounding quotes.
-- You're a member of this community: if you have a thought, a joke, a warm reaction, or a helpful answer to add, add it. Reply with exactly: SILENT only if you'd truly be noise or just restating someone.
-- Never repeat someone else's message back at them. Do not announce that you are a language model."""
+- Join only if you're reacting to what's happening in these messages RIGHT NOW. Never bring up old topics or things nobody is talking about. If your message could fit any other conversation, reply with exactly: SILENT
+- Staying quiet is fine: if you would just repeat someone or add noise, reply with exactly: SILENT
+- When you do speak: 1-2 short sentences, the way a real person texts in Discord. No markdown, no lists, no em-dashes or spaced hyphens as punctuation. No surrounding quotes.
+- Never repeat someone else's message back at them, and never announce that you are a bot.
+- Reply with ONLY the message you would send, or the single word SILENT."""
 
 SUMMARY_SYSTEM = """You summarize Discord conversations into a quick catch-up brief.
 Format (plain text, no markdown headings, no bold):
@@ -110,9 +112,9 @@ Skip filler and pleasantries. If the stretch is mostly banter, say so in a short
 
 SNIPPET_SYSTEM = """You write quick public recaps of Discord conversations.
 Reply with ONLY the recap: 2-4 short sentences, casual and natural. No bullet lists, no
-headings, no preamble like "Here's a summary" -- just the recap itself. Cover the gist,
-any decisions or plans, and anything left unresolved. Use names when it matters. If the
-stretch was mostly banter, say so in one line."""
+headings, no preamble, just the recap itself. Cover the gist, any decisions or plans,
+and anything left unresolved. Use names when it matters. If the stretch was mostly
+banter, say so in one line. Write like a person texting: no em-dashes, no bold."""
 
 CATCHUP_NOTE = "Summarize what {name} missed in #{channel} since their last message there."
 CATCHUP_FALLBACK = (
@@ -458,11 +460,39 @@ def build_transcript(rows, max_chars: int = 8000) -> str:
     return "\n".join(lines)
 
 
+def _join_dash_parts(text: str, pat: str, tight_keep: str) -> str:
+    """Replace dash separators with commas, except digit-to-digit ranges
+    (8 - 9) which people actually write that way."""
+    parts = re.split(pat, text)
+    if len(parts) < 2:
+        return text
+    out = parts[0]
+    for prv, nxt in pairwise(parts):
+        if prv[-1:].isdigit() and nxt[:1].isdigit():
+            out += tight_keep + nxt
+        else:
+            out += ", " + nxt
+    return out
+
+
+def de_dash(text: str) -> str:
+    """Strip the AI tells: em/en dashes and spaced-hyphen punctuation.
+    Real people punctuate with commas and periods, not dashes."""
+    text = re.sub(r"(?m)^\s*[-–—•]\s+", "", text)   # bullet-ish leading dashes
+    text = _join_dash_parts(text, r"\s*[—–]\s*", "-")
+    text = _join_dash_parts(text, r"\s+-\s+", " - ")
+    text = re.sub(r",\s*,+", ",", text)             # ,, -> ,
+    text = re.sub(r",\s+([.!?])", r"\1", text)      # ",." -> "."
+    text = re.sub(r"\s+([,.!?])", r"\1", text)      # " ," -> ","
+    return re.sub(r"^[,\s]+|[,;\s]+$", "", text)
+
+
 def clean_reply(text: str) -> str:
     text = text.strip()
     text = re.sub(r"^```[a-z]*\n?|```$", "", text).strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'“”":
         text = text[1:-1].strip()
+    text = de_dash(text)
     text = " ".join(text.split())
     return text[:480]
 
@@ -723,7 +753,8 @@ def brain_block(guild_id, query: str) -> str:
         used += len(line)
     if not lines:
         return ""
-    return ("Things you remember about this server, from earlier conversations:\n"
+    return ("Background from your long-term memory (use ONLY if directly relevant "
+            "to the current message; never bring these up unprompted):\n"
             + "\n".join(lines) + "\n\n")
 
 
@@ -951,7 +982,9 @@ async def handle_mention(message: discord.Message, replied_to=None):
               + f"You are {bot.user.display_name}, a member of this Discord community.\n"
                 f"{persona(message.guild.id)}\n\n"
                 f"You were just mentioned in #{getattr(message.channel, 'name', '?')}. "
-                f"Reply helpfully and briefly \u2014 1-3 short sentences, casual, no markdown. "
+                f"Reply helpfully and briefly: 1-3 short sentences, casual, no markdown. "
+                f"Answer what they actually said, don't drag in unrelated topics. "
+                f"Write like a person texting, no em-dashes or \" - \" punctuation. "
                 f"Use the recent conversation below as context. Don't prefix with your name, "
                 f"don't announce that you're a bot, and don't summarize unless asked.")
     reply_note = ""
@@ -1132,7 +1165,7 @@ async def summary(interaction: discord.Interaction, count: int = 100):
         await interaction.followup.send("The model returned nothing. Try again in a moment.")
         return
     await interaction.followup.send(
-        f"**TL;DR** \u2014 {text[:1800]}",
+        f"**TL;DR:** {de_dash(text[:1800])}",
         allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -2263,6 +2296,11 @@ def run_check() -> int:
     assert db.remove_memory("0", mems[0]["id"])
     db.clear_memories("0")
     print("memory store: OK")
+    assert clean_reply("hey \u2014 so the rally is 8 to 9pm, you in?") == \
+        "hey, so the rally is 8 to 9pm, you in?"
+    assert clean_reply("yeah - I'm in") == "yeah, I'm in"
+    assert clean_reply("- one\n- two") == "one two"  # list dashes stripped
+    print("human voice (no dashes): OK")
     db.set_kv("cfg:soul", "self-check soul")
     assert persona("777") == "self-check soul"
     db.set_kv("persona:777", "server override")
