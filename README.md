@@ -28,6 +28,12 @@ The command center for the WordPress copies on your Umbrel: WordPress with the [
 
 Add each site by address and admin login — MainWP installs its companion plugin and then gives you one-click sign-in, plugin/theme management, and bulk updates across the whole fleet, all from one dashboard.
 
+### Preview Server
+
+A tiny nginx server for previewing static sites — HTML mockups, prototypes and client drafts — straight from your Umbrel.
+
+Drop files into its data folder (directory listing included), or set `PREVIEW_FETCH_URL` to a `.tar.gz` and it pulls and unpacks the site on every start. No login required.
+
 ## Install
 
 1. Open **App Store** on your Umbrel

@@ -1,0 +1,31 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      # Format: <app-id>_<docker-service-name>_1
+      APP_HOST: mozart-preview_web_1
+      APP_PORT: 80
+
+  # nginx serving whatever lives in the app's data folder.
+  #
+  # Optional: set PREVIEW_FETCH_URL (Settings -> Advanced -> environment variables,
+  # service "web") to a .tar.gz URL of a site; it is pulled and unpacked into the
+  # web root on every start, so the app always serves the latest build.
+  web:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - |
+        if [ -n "$$PREVIEW_FETCH_URL" ]; then
+          wget -qO /tmp/site.tar.gz "$$PREVIEW_FETCH_URL" \
+            && tar xzf /tmp/site.tar.gz -C /usr/share/nginx/html \
+            && echo "[preview] site updated from $$PREVIEW_FETCH_URL" \
+            || echo "[preview] fetch failed - serving existing files";
+        fi
+        exec nginx -g "daemon off;"
+    volumes:
+      - ${APP_DATA_DIR}/data:/usr/share/nginx/html
+      - ${APP_DATA_DIR}/data/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro

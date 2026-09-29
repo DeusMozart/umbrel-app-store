@@ -1,0 +1,29 @@
+manifestVersion: 1
+id: mozart-preview
+category: developer
+name: Preview Server
+version: "1.0.0"
+tagline: Static site previews — mockups, prototypes, client drafts
+description: >-
+  A tiny nginx server for previewing static sites from your Umbrel — HTML mockups, prototypes, and client drafts.
+
+  Drop any site into the app's data folder (directory listing is on), or set PREVIEW_FETCH_URL to a .tar.gz URL and the server pulls and unpacks the site on every start.
+
+  No login required. Keep it on your local network.
+developer: DeusMozart
+website: https://github.com/DeusMozart/umbrel-app-store
+submitter: DeusMozart
+submission: https://github.com/DeusMozart/umbrel-app-store
+repo: https://github.com/DeusMozart/umbrel-app-store
+support: https://github.com/DeusMozart/umbrel-app-store/issues
+gallery: []
+releaseNotes: >-
+  First release: nginx static server, data-folder hosting with directory listing, optional fetch-on-start from a tarball URL (PREVIEW_FETCH_URL).
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+port: 8610
+icon: https://raw.githubusercontent.com/DeusMozart/umbrel-app-store/main/mozart-preview/icon.svg
+storage:
+  dataRoot: data
