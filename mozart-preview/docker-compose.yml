@@ -9,6 +9,9 @@ services:
 
   # nginx serving whatever lives in the app's data folder.
   #
+  # The nginx config is generated at startup (umbrelOS's data-folder seeding does
+  # not copy nested files reliably). Directory listing is enabled.
+  #
   # Optional: set PREVIEW_FETCH_URL (Settings -> Advanced -> environment variables,
   # service "web") to a .tar.gz URL of a site; it is pulled and unpacked into the
   # web root on every start, so the app always serves the latest build.
@@ -19,6 +22,19 @@ services:
       - sh
       - -c
       - |
+        cat > /etc/nginx/conf.d/default.conf <<'CONF'
+        server {
+            listen 80;
+            server_name _;
+            root /usr/share/nginx/html;
+            index index.html;
+            charset utf-8;
+            autoindex on;
+            autoindex_exact_size off;
+            autoindex_localtime on;
+            location / { try_files $$uri $$uri/ =404; }
+        }
+        CONF
         if [ -n "$$PREVIEW_FETCH_URL" ]; then
           wget -qO /tmp/site.tar.gz "$$PREVIEW_FETCH_URL" \
             && tar xzf /tmp/site.tar.gz -C /usr/share/nginx/html \
@@ -28,4 +44,3 @@ services:
         exec nginx -g "daemon off;"
     volumes:
       - ${APP_DATA_DIR}/data:/usr/share/nginx/html
-      - ${APP_DATA_DIR}/data/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
