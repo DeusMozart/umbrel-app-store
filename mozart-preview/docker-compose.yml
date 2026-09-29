@@ -14,7 +14,8 @@ services:
   #
   # Optional: set PREVIEW_FETCH_URL (Settings -> Advanced -> environment variables,
   # service "web") to a .tar.gz URL of a site; it is pulled and unpacked into the
-  # web root on every start, so the app always serves the latest build.
+  # web root on every start, so the app always serves the latest build. Unpacked
+  # files are made world-readable so the nginx worker can serve them.
   web:
     image: nginx:1.27-alpine
     restart: unless-stopped
@@ -38,6 +39,7 @@ services:
         if [ -n "$$PREVIEW_FETCH_URL" ]; then
           wget -qO /tmp/site.tar.gz "$$PREVIEW_FETCH_URL" \
             && tar xzf /tmp/site.tar.gz -C /usr/share/nginx/html \
+            && chmod -R a+rX /usr/share/nginx/html \
             && echo "[preview] site updated from $$PREVIEW_FETCH_URL" \
             || echo "[preview] fetch failed - serving existing files";
         fi
