@@ -13,8 +13,9 @@ environment variables (Settings -> Advanced -> environment variables):
     PORT               Status dashboard port (default 8095)
     QUIET_HOURS        e.g. "1-8" or "22-6"; "off" (default) disables
     LOG_LEVEL          default INFO
+    MNEMO_ENABLED      "0" disables the Mnemosyne long-term memory (default: on)
 
-Commands: /summarize /summary /catchup /chime /persona /memory /botstatus
+Commands: /summarize /summary /catchup /chime /persona /memory /brain /botstatus
 """
 
 from __future__ import annotations
@@ -33,13 +34,14 @@ import time
 import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 CSRF_TOKEN = uuid.uuid4().hex[:24]  # guards dashboard POSTs; rotates on restart
 LOG = logging.getLogger("bot")
 
@@ -59,6 +61,12 @@ PORT = int(env("PORT", "8095") or "8095")
 QUIET_HOURS = env("QUIET_HOURS", "off").lower()
 LOG_LEVEL = env("LOG_LEVEL", "INFO").upper()
 SOUL_FILE = env("SOUL_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "soul.md"))
+MNEMO_ENABLED = env("MNEMO_ENABLED", "1") != "0"   # Mnemosyne long-term memory
+MNEMO_DIR = os.path.join(DATA_DIR, "mnemosyne")    # one brain (SQLite) per guild
+MNEMO_MIN_SCORE = 0.25                             # recall relevance floor
+MNEMO_RECALL_LIMIT = 6                             # memories injected per prompt
+MNEMO_SLEEP_MIN = 40                               # consolidate once this many wait
+MNEMO_SLEEP_GAP = 6 * 3600                         # ...and at most every 6 hours
 
 MOODS: dict[str, dict] = {
     # chance: probability a full batch gets evaluated
@@ -503,6 +511,16 @@ async def llm_chat(system: str, user: str, max_tokens: int = 350,
             state.llm_last_error = f"network: {e}"
             raise LLMError(f"Could not reach the LLM endpoint: {e}") from e
         if resp.status_code != 200:
+            # OpenCode Zen intermittently answers 400 "Upstream request failed:
+            # Model is unavailable" for a few seconds during backend failover --
+            # retry those (and classic 429/5xx) instead of eating the reply.
+            transient = (resp.status_code in (400, 429, 502, 503, 504)
+                         and ("Upstream request failed" in resp.text
+                              or "Model is unavailable" in resp.text))
+            if transient and attempts < 3:
+                state.llm_last_error = f"HTTP {resp.status_code} (retrying): {resp.text[:120]}"
+                await asyncio.sleep(1.0 + attempts)
+                continue
             state.llm_last_error = f"HTTP {resp.status_code}: {resp.text[:160]}"
             raise LLMError(f"LLM endpoint returned HTTP {resp.status_code}: {resp.text[:160]}")
         try:
@@ -572,14 +590,189 @@ def memory_block(guild_id) -> str:
 
 
 # --------------------------------------------------------------------------
+# Long-term memory -- "the brain" (Mnemosyne, one store per guild)
+# --------------------------------------------------------------------------
+
+def brain_on(guild_id) -> bool:
+    """Is long-term memory enabled for this guild? (default: on)"""
+    return db.get_kv(f"brain:{guild_id}") != "0"
+
+
+_mnemo_local = threading.local()
+_mnemo_warned = False
+
+
+def _mnemo(guild_id):
+    """Per-guild Mnemosyne store, cached per thread (SQLite conns are thread-bound).
+
+    Returns None when disabled or unavailable -- every caller then degrades
+    to the pre-1.6 behavior."""
+    global _mnemo_warned
+    if not MNEMO_ENABLED or guild_id in (None, ""):
+        return None
+    gid = str(guild_id)
+    cache = getattr(_mnemo_local, "stores", None)
+    if cache is None:
+        cache = _mnemo_local.stores = {}
+    inst = cache.get(gid)
+    if inst is not None:
+        return inst
+    try:
+        from mnemosyne.core.memory import Mnemosyne
+        os.makedirs(MNEMO_DIR, exist_ok=True)
+        inst = Mnemosyne(session_id=f"discord_{gid}",
+                         db_path=Path(MNEMO_DIR) / f"guild_{gid}.db")
+        for pragma in ("PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=3000"):
+            try:
+                inst.conn.execute(pragma)
+            except Exception as e:  # noqa: BLE001
+                LOG.debug("brain pragma %s skipped: %s", pragma, e)
+        cache[gid] = inst
+        LOG.info("brain: opened %s", inst.db_path)
+        return inst
+    except Exception as e:  # noqa: BLE001
+        if not _mnemo_warned:
+            LOG.warning("brain unavailable -- long-term memory off: %s", e)
+            _mnemo_warned = True
+        return None
+
+
+def brain_remember(guild_id, text, source="conversation", importance=0.5,
+                   veracity="stated") -> bool:
+    """Store one memory. Silent no-op when the brain is off or unavailable."""
+    if not brain_on(guild_id):
+        return False
+    m = _mnemo(guild_id)
+    if m is None:
+        return False
+    text = " ".join((text or "").split())
+    if len(text) < 8:
+        return False
+    try:
+        return m.remember(text[:800], source=source, importance=importance,
+                          veracity=veracity) is not None
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("brain remember failed: %s", e)
+        return False
+
+
+def brain_ingest_message(message: discord.Message):
+    """Remember one human message (called on the event-loop thread)."""
+    if message.guild is None:
+        return
+    content = (message.clean_content or "").strip()
+    if not content and message.attachments:
+        content = "[shared an attachment]"
+    if len(content) < 8:
+        return
+    brain_remember(str(message.guild.id),
+                   f"{message.author.display_name}: {content}")
+
+
+def brain_block(guild_id, query: str) -> str:
+    """Most relevant long-term memories for a prompt ('' when none)."""
+    if guild_id is None or not (query or "").strip() or not brain_on(guild_id):
+        return ""
+    m = _mnemo(guild_id)
+    if m is None:
+        return ""
+    try:
+        hits = m.recall(query[:1000], top_k=MNEMO_RECALL_LIMIT)
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("brain recall failed: %s", e)
+        return ""
+    lines, used = [], 0
+    for h in hits:
+        if (h.get("score") or 0) < MNEMO_MIN_SCORE:
+            continue
+        content = " ".join(str(h.get("content") or "").split())[:180]
+        if not content:
+            continue
+        line = f"- [{str(h.get('timestamp') or '')[:10]}] {content}"
+        if used + len(line) > 1100:
+            break
+        lines.append(line)
+        used += len(line)
+    if not lines:
+        return ""
+    return ("Things you remember about this server, from earlier conversations:\n"
+            + "\n".join(lines) + "\n\n")
+
+
+_brain_last_sleep: dict = {}
+_brain_backfill_started = False
+
+
+def brain_backfill():
+    """One-time: seed the brain from the messages already stored on disk (the
+    7-day chime buffer), so it starts with real history instead of an empty
+    slate. Runs in a worker thread after first connect."""
+    if not MNEMO_ENABLED or not bot.is_ready():
+        return
+    for guild in bot.guilds:
+        gid = str(guild.id)
+        if not brain_on(gid) or db.get_kv(f"brain:backfilled:{gid}"):
+            continue
+        if _mnemo(gid) is None:
+            continue  # brain not available -- try again next start
+        total = 0
+        try:
+            for ch in db.all_channels():
+                if ch["guild_id"] != gid:
+                    continue
+                for r in db.recent(ch["channel_id"], limit=400):
+                    who = bot.user.display_name if r["is_bot"] else r["author_name"]
+                    imp = 0.4 if r["is_bot"] else 0.5
+                    if brain_remember(gid, f"{who}: {r['content']}", importance=imp):
+                        total += 1
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("brain backfill failed for %s: %s", gid, e)
+            continue
+        db.set_kv(f"brain:backfilled:{gid}", "1")
+        LOG.info("brain: backfilled %d stored messages for guild %s", total, gid)
+
+
+def brain_maintenance():
+    """Consolidate aged memories into episodes, occasionally (from snapshot_loop)."""
+    if not MNEMO_ENABLED or not bot.is_ready():
+        return
+    now = time.time()
+    for guild in bot.guilds:
+        gid = str(guild.id)
+        if now - _brain_last_sleep.get(gid, 0) < MNEMO_SLEEP_GAP:
+            continue
+        if not brain_on(gid):
+            continue
+        m = _mnemo(gid)
+        if m is None:
+            continue
+        _brain_last_sleep[gid] = now
+        try:
+            beam = (m.get_stats() or {}).get("beam") or {}
+            waiting = (beam.get("working_memory") or {}).get("unconsolidated") or 0
+            if waiting < MNEMO_SLEEP_MIN:
+                continue
+            t0 = time.time()
+            out = m.sleep() or {}
+            LOG.info("brain: guild %s consolidated (%s, %.1fs, %s waiting)",
+                     gid, out.get("status"), time.time() - t0, waiting)
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("brain consolidation failed: %s", e)
+
+
+# --------------------------------------------------------------------------
 # Sending
 # --------------------------------------------------------------------------
 
 async def store_own_message(channel, text: str):
+    guild = getattr(channel, "guild", None)
+    guild_id = str(guild.id) if guild else ""
+    if guild_id:
+        who = bot.user.display_name if bot.user else "bot"
+        brain_remember(guild_id, f"{who}: {text}",
+                       source="conversation", importance=0.35, veracity="unknown")
     if str(channel.id) in state.chime_ids:
         ts = time.time()
-        guild = getattr(channel, "guild", None)
-        guild_id = str(guild.id) if guild else ""
         db.store_message(f"bot-{channel.id}-{int(ts * 1000)}", guild_id,
                          str(channel.id), str(bot.user.id), bot.user.display_name,
                          True, text, ts)
@@ -614,6 +807,10 @@ async def on_ready():
     state.connected = True
     state.bot_tag = str(bot.user)
     LOG.info("Connected as %s (in %d guild(s))", bot.user, len(bot.guilds))
+    global _brain_backfill_started
+    if MNEMO_ENABLED and not _brain_backfill_started:
+        _brain_backfill_started = True
+        asyncio.create_task(asyncio.to_thread(brain_backfill))
     await bot.change_presence(
         activity=discord.Activity(type=discord.ActivityType.watching, name="the conversation"))
     for guild in bot.guilds:
@@ -653,6 +850,10 @@ async def snapshot_loop():
             state.guilds = guilds
         except Exception as e:  # noqa: BLE001
             LOG.debug("snapshot error: %s", e)
+        try:
+            brain_maintenance()
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("brain maintenance error: %s", e)
         await asyncio.sleep(15)
 
 
@@ -664,6 +865,8 @@ async def on_message(message: discord.Message):
         return
     if message.author.bot:  # ignore other bots
         return
+
+    brain_ingest_message(message)
 
     cid = str(message.channel.id)
     if cid in state.chime_ids:
@@ -713,8 +916,10 @@ async def handle_mention(message: discord.Message, replied_to=None):
         LOG.warning("history fetch failed: %s", e)
     rows.reverse()
     transcript = build_transcript(rows, max_chars=5000)
+    focus = f"{message.clean_content}\n{transcript[-600:]}"
 
     system = (memory_block(message.guild.id)
+              + brain_block(message.guild.id, focus)
               + f"You are {bot.user.display_name}, a member of this Discord community.\n"
                 f"{persona(message.guild.id)}\n\n"
                 f"You were just mentioned in #{getattr(message.channel, 'name', '?')}. "
@@ -783,9 +988,11 @@ async def maybe_chime(message: discord.Message):
     if len(rows) < 4:
         return
     transcript = build_transcript(rows, max_chars=6000)
-    system = memory_block(message.guild.id) + CHIME_SYSTEM.format(
-        persona=persona(message.guild.id),
-        channel=getattr(message.channel, "name", "?"))
+    system = (memory_block(message.guild.id)
+              + brain_block(message.guild.id, transcript[-900:])
+              + CHIME_SYSTEM.format(
+                  persona=persona(message.guild.id),
+                  channel=getattr(message.channel, "name", "?")))
     prompt = (f"Recent messages in #{getattr(message.channel, 'name', '?')}:\n\n{transcript}\n\n"
               f"Should you chime in? Reply with SILENT or the message text only.")
     try:
@@ -1142,7 +1349,113 @@ async def memory_clear(interaction: discord.Interaction):
     await interaction.response.send_message(f"Cleared {n} notes from memory.", ephemeral=True)
 
 
-for _group in (chime_group, persona_group, memory_group):
+brain_group = app_commands.Group(
+    name="brain", description="Long-term memory: what the bot remembers about this server")
+
+
+@brain_group.command(name="status", description="What the bot remembers about this server")
+async def brain_status(interaction: discord.Interaction):
+    gid = str(interaction.guild.id) if interaction.guild else ""
+    m = _mnemo(gid) if gid else None
+    if m is None:
+        await interaction.response.send_message(
+            "Long-term memory isn't available right now.", ephemeral=True)
+        return
+    st = m.get_stats() or {}
+    beam = st.get("beam") or {}
+    wm = beam.get("working_memory") or {}
+    ep = beam.get("episodic_memory") or {}
+    tail = ("It quietly remembers every conversation here, and older memories get "
+            "consolidated into episode summaries so it keeps the gist.\n"
+            f"Browse them in the dashboard: http://umbrel.local:{PORT}/settings/guild/{gid}"
+            if brain_on(gid) else
+            "Memory is paused here \u2014 `/brain on` to resume.")
+    await interaction.response.send_message(
+        f"**Brain {'on' if brain_on(gid) else 'off'}** \u00b7 "
+        f"{st.get('total_memories', 0)} memories "
+        f"({wm.get('total', 0)} fresh \u00b7 {wm.get('consolidated', 0)} consolidated \u00b7 "
+        f"{ep.get('total', 0)} episodes)\n"
+        f"Last remembered: {str(st.get('last_memory') or 'nothing yet')[:16]}\n{tail}",
+        ephemeral=True)
+
+
+@brain_group.command(name="on", description="Turn on long-term memory for this server")
+async def brain_cmd_on(interaction: discord.Interaction):
+    if not allowed(interaction):
+        await deny(interaction)
+        return
+    db.set_kv(f"brain:{interaction.guild.id}", "1")
+    await interaction.response.send_message(
+        "Long-term memory is **on** \u2014 I'll remember the conversation here and "
+        "recall what's relevant when I answer.", ephemeral=True)
+
+
+@brain_group.command(name="off", description="Pause long-term memory for this server")
+async def brain_cmd_off(interaction: discord.Interaction):
+    if not allowed(interaction):
+        await deny(interaction)
+        return
+    db.set_kv(f"brain:{interaction.guild.id}", "0")
+    await interaction.response.send_message(
+        "Long-term memory is **off** here \u2014 I'll stop remembering new things. "
+        "Nothing is deleted; `/brain on` resumes.", ephemeral=True)
+
+
+@brain_group.command(name="remember", description="Ask the bot to remember something for this server")
+@app_commands.describe(text="The fact to remember, e.g. 'Zak leads rallies at 8pm'")
+async def brain_cmd_remember(interaction: discord.Interaction, text: str):
+    ok = brain_remember(str(interaction.guild.id), text, source="fact",
+                        importance=0.8, veracity="stated")
+    await interaction.response.send_message(
+        "Got it \u2014 I'll remember that." if ok else
+        "I couldn't store that \u2014 add a little more detail (or check `/brain status`).",
+        ephemeral=True)
+
+
+@brain_group.command(name="recall", description="Search what the bot remembers about this server")
+@app_commands.describe(query="What to look for, e.g. 'rally times'")
+async def brain_cmd_recall(interaction: discord.Interaction, query: str):
+    m = _mnemo(str(interaction.guild.id))
+    if m is None:
+        await interaction.response.send_message(
+            "Long-term memory isn't available right now.", ephemeral=True)
+        return
+    try:
+        hits = [h for h in m.recall(query, top_k=10)
+                if (h.get("score") or 0) >= MNEMO_MIN_SCORE]
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("brain recall command failed: %s", e)
+        hits = []
+    if not hits:
+        await interaction.response.send_message(
+            "Nothing comes to mind for that.", ephemeral=True)
+        return
+    lines = "\n".join(
+        f"[{str(h.get('timestamp') or '')[:10]}] "
+        f"{' '.join(str(h.get('content') or '').split())[:200]}" for h in hits)
+    await interaction.response.send_message(
+        f"**What I remember** (closest matches):\n{lines[:1800]}", ephemeral=True)
+
+
+@brain_group.command(name="sleep", description="Consolidate old memories into episode summaries now")
+async def brain_cmd_sleep(interaction: discord.Interaction):
+    if not allowed(interaction):
+        await deny(interaction)
+        return
+    await interaction.response.defer(thinking=True)
+    m = _mnemo(str(interaction.guild.id))
+    if m is None:
+        await interaction.followup.send("Long-term memory isn't available right now.")
+        return
+    try:
+        out = m.sleep() or {}
+        msg = str(out.get("message") or out.get("status") or "done")
+    except Exception as e:  # noqa: BLE001
+        msg = f"Consolidation failed: {type(e).__name__}: {e}"
+    await interaction.followup.send(f"Consolidation: {msg}"[:1900], ephemeral=True)
+
+
+for _group in (chime_group, persona_group, memory_group, brain_group):
     tree.add_command(_group)
 
 
@@ -1155,6 +1468,16 @@ async def botstatus(interaction: discord.Interaction):
     chans = db.all_channels()
     mine = [c for c in chans if interaction.guild and c["guild_id"] == str(interaction.guild.id)]
     active = [c["name"] for c in mine if c["chime"]]
+    brain_line = ""
+    if interaction.guild:
+        bm = _mnemo(str(interaction.guild.id))
+        if bm is not None:
+            try:
+                bst = bm.get_stats() or {}
+                brain_line = (f"\nBrain: {bst.get('total_memories', 0)} long-term memories "
+                              f"({'on' if brain_on(interaction.guild.id) else 'paused'})")
+            except Exception as e:  # noqa: BLE001
+                LOG.debug("botstatus brain stats failed: %s", e)
     await interaction.response.send_message(
         f"**Status** {'online' if ok else 'offline'} \u00b7 up {human_delta(time.time() - state.start)} "
         f"\u00b7 v{VERSION}\n"
@@ -1165,6 +1488,7 @@ async def botstatus(interaction: discord.Interaction):
         f"LLM: `{lmodel}` @ `{lbase}` \u00b7 API key "
         f"{'set' if lkey else '**missing**'}\n"
         f"Dashboard: http://umbrel.local:{PORT}/settings"
+        + brain_line
         + (f"\nLast LLM error: `{state.llm_last_error[:160]}`" if state.llm_last_error else ""),
         ephemeral=True)
 
@@ -1443,7 +1767,7 @@ def render_settings(saved: str = "", err: str = "") -> str:
             f"<body>{body}{SETTINGS_JS}</body></html>")
 
 
-def render_guild_page(gid: str, saved: str = "", err: str = "") -> str:
+def render_guild_page(gid: str, saved: str = "", err: str = "", brain_q: str = "") -> str:
     chans = [c for c in db.all_channels() if c["guild_id"] == gid]
     rows = []
     for c in chans:
@@ -1483,6 +1807,77 @@ def render_guild_page(gid: str, saved: str = "", err: str = "") -> str:
         for m in mems)
     mem_block = (f"<table><tr><th>#</th><th>Note</th><th></th></tr>{mem_rows}</table>"
                  if mems else "<div class='muted'>No notes yet.</div>")
+    # --- the brain (Mnemosyne long-term memory) ---
+    bm = _mnemo(gid)
+    if bm is None:
+        brain_html = ("<div class='muted'>Long-term memory (Mnemosyne) is not "
+                      "available in this build.</div>")
+    else:
+        try:
+            bst = bm.get_stats() or {}
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("brain stats for dashboard failed: %s", e)
+            bst = {}
+        beam = bst.get("beam") or {}
+        wm = beam.get("working_memory") or {}
+        ep = beam.get("episodic_memory") or {}
+        b_on = brain_on(gid)
+        if brain_q:
+            try:
+                raw = bm.recall(brain_q, top_k=25)
+            except Exception as e:  # noqa: BLE001
+                LOG.debug("brain search failed: %s", e)
+                raw = []
+            shown = [x for x in raw if (x.get("score") or 0) >= MNEMO_MIN_SCORE]
+            label = f"matches for \u201c{esc(brain_q)}\u201d"
+        else:
+            try:
+                raw = bm.get_all_memories() or []
+            except Exception as e:  # noqa: BLE001
+                LOG.debug("brain list failed: %s", e)
+                raw = []
+            shown = list(reversed(raw[-20:]))
+            label = "newest 20"
+        brows = "".join(
+            f"<tr><td class='mono'>{esc(str(x.get('timestamp') or '')[:16])}</td>"
+            f"<td>{esc(' '.join(str(x.get('content') or '').split())[:220])}</td>"
+            f"<td class='muted'>{esc(x.get('source') or '')}</td>"
+            f"<td style='text-align:right'><form method='post' "
+            f"action='/settings/guild/{esc(gid)}/brain/forget'>"
+            f"<input type='hidden' name='csrf' value='{CSRF_TOKEN}'>"
+            f"<input type='hidden' name='id' value='{esc(str(x.get('id')))}'>"
+            f"<button type='submit' class='danger'>Forget</button></form></td></tr>"
+            for x in shown)
+        if brows:
+            btable = (f"<div class='muted' style='margin:8px 0'>showing {label}</div>"
+                      f"<table><tr><th>When</th><th>Memory</th><th>Source</th><th></th></tr>"
+                      f"{brows}</table>")
+        else:
+            btable = ("<div class='muted'>"
+                      + ("nothing matched that search" if brain_q else
+                         "nothing remembered yet \u2014 it learns as people chat")
+                      + ".</div>")
+        brain_html = f"""
+  <div class="snippet">
+    <div class="muted" style="margin-bottom:8px">
+      {'on' if b_on else 'off'} \u00b7 {bst.get('total_memories', 0)} memories
+      ({wm.get('total', 0)} fresh \u00b7 {ep.get('total', 0)} episodes) \u00b7
+      last: {esc(str(bst.get('last_memory') or 'never')[:16])}
+    </div>
+    <form method="get" action="/settings/guild/{esc(gid)}" style="display:inline">
+      <input type="text" name="brain_q" value="{esc(brain_q)}" placeholder="search memories">
+      <button type="submit">Search</button>
+    </form>
+    <form method="post" action="/settings/guild/{esc(gid)}/brain/toggle" style="display:inline">
+      <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+      <button type="submit" class="ghost">{'Pause memory' if b_on else 'Resume memory'}</button>
+    </form>
+    <form method="post" action="/settings/guild/{esc(gid)}/brain/sleep" style="display:inline">
+      <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
+      <button type="submit" class="ghost">Consolidate now</button>
+    </form>
+  </div>
+  {btable}"""
     banner = ""
     if saved:
         banner = "<div class='snippet' style='border-color:#2e5e34'><b>Saved.</b></div>"
@@ -1520,6 +1915,8 @@ def render_guild_page(gid: str, saved: str = "", err: str = "") -> str:
     </form>
   </div>
   {mem_block}
+  <h2>Brain \u2014 long-term memory</h2>
+  {brain_html}
   <footer>MOZART DISCORD BOT \u00b7 http://umbrel.local:{PORT}/settings</footer>
 </div>"""
     return ("<!doctype html><html><head><meta charset='utf-8'>"
@@ -1551,7 +1948,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 gid = parts[3] if len(parts) > 3 else ""
                 if gid:
                     self._html(200, render_guild_page(
-                        gid, saved=q.get("saved", [""])[0], err=q.get("err", [""])[0]))
+                        gid, saved=q.get("saved", [""])[0], err=q.get("err", [""])[0],
+                        brain_q=q.get("brain_q", [""])[0]))
                 else:
                     self._json(404, {"error": "missing server id"})
             elif path == "/" or path.startswith("/index"):
@@ -1732,6 +2130,32 @@ class StatusHandler(BaseHTTPRequestHandler):
                 mid = 0
             db.remove_memory(gid, mid)
             self._redirect(back + "?saved=1")
+        elif rest == "brain/toggle":
+            db.set_kv(f"brain:{gid}", "0" if brain_on(gid) else "1")
+            self._redirect(back + "?saved=1")
+        elif rest == "brain/forget":
+            m = _mnemo(gid)
+            ok = False
+            if m is not None:
+                try:
+                    ok = bool(m.forget(str(f.get("id") or "")))
+                except Exception as e:  # noqa: BLE001
+                    LOG.debug("brain forget failed: %s", e)
+            self._redirect(back + ("?saved=1" if ok else
+                                   "?err=" + quote("Couldn't forget that memory.")))
+        elif rest == "brain/sleep":
+            m = _mnemo(gid)
+            if m is None:
+                self._redirect(back + "?err=" + quote("Long-term memory unavailable."))
+            else:
+                try:
+                    out = m.sleep() or {}
+                    LOG.info("brain: manual consolidation for %s -> %s",
+                             gid, out.get("status"))
+                    self._redirect(back + "?saved=1")
+                except Exception as e:  # noqa: BLE001
+                    self._redirect(back + "?err=" + quote(
+                        f"Consolidation failed: {type(e).__name__}"))
         else:
             self._json(404, {"error": "unknown settings action"})
 
@@ -1809,6 +2233,17 @@ def run_check() -> int:
     db.del_kv("cfg:soul")
     assert soul_text()
     print("soul/persona layering: OK")
+    b1 = brain_remember("777", "Zak leads Kingshot rallies for the LoL alliance at 8pm",
+                        source="fact", importance=0.9)
+    b2 = brain_remember("777", "The group likes voting on alliance banners after rallies")
+    b_blk = brain_block("777", "when does zak lead rallies?")
+    assert b1 and b2 and "rallies" in b_blk.lower(), b_blk
+    db.set_kv("brain:777", "0")
+    assert brain_block("777", "rallies") == ""
+    db.del_kv("brain:777")
+    bst = _mnemo("777").get_stats()
+    print(f"brain (mnemosyne): OK ({bst.get('total_memories')} memories, "
+          f"recall block {len(b_blk)} chars)")
     db.conn.execute("DELETE FROM messages WHERE channel_id = '999'")
     db.conn.commit()
     start_status_server()
@@ -1824,7 +2259,7 @@ def run_check() -> int:
     assert "Model" in page and "Soul" in page and "csrf" in page
     with urllib.request.urlopen(f"{base_url}/settings/guild/0", timeout=5) as r:
         page = r.read().decode()
-    assert "Persona" in page and "Memory" in page
+    assert "Persona" in page and "Memory" in page and "Brain" in page
 
     def post(path, data):
         body = urllib.parse.urlencode({"csrf": CSRF_TOKEN, **data}).encode()
@@ -1835,7 +2270,9 @@ def run_check() -> int:
     post("/settings/llm", {"base_url": "https://example.com/v1", "model": "m",
                            "model_custom": "", "api_key": ""})
     assert db.get_kv("cfg:llm_base_url") == "https://example.com/v1"
+    assert db.get_kv("cfg:llm_model") == "m"
     db.del_kv("cfg:llm_base_url")
+    db.del_kv("cfg:llm_model")
     post("/settings/soul", {"text": "dashboard soul test"})
     assert db.get_kv("cfg:soul") == "dashboard soul test"
     post("/settings/soul/reset", {})

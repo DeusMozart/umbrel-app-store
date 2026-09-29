@@ -15,6 +15,8 @@ and can chime in on its own — hosted on your Umbrel.
 | `/chime status` | Current chime settings and activity for this channel. |
 | `/persona show` / `/persona set <text>` / `/persona reset` | The bot's voice for this server (up to 1500 chars). |
 | `/memory add <text>` / `list` / `forget <id>` / `clear` | Facts the bot should remember about this community — it weaves them into its chime-ins and replies (up to 60 notes). |
+| `/brain status` / `on` / `off` | The long-term memory (Mnemosyne brain): what it has stored for this server. `on`/`off` pauses it (needs Manage Server). |
+| `/brain remember <text>` / `recall <query>` / `sleep` | Save a fact yourself, search what it remembers, or consolidate old memories into episode summaries right now. |
 | `/botstatus` | Health check: connection, counters, LLM endpoint, last error. |
 
 Mentions — and direct replies to the bot's messages — always get a reply, whether or not chime-in is enabled for the channel.
@@ -46,6 +48,24 @@ chime-in and mention reply. Three layers, from general to specific:
 
 Cap: 6000 characters. `SOUL_FILE` can point at a different file path.
 
+## Long-term memory (the brain)
+
+Every message the bot can see is quietly remembered in its own local
+[Mnemosyne](https://github.com/AxDSan/mnemosyne) store — one SQLite database per server,
+fully on-device (zero cloud). Before any reply or chime-in it searches that memory for
+relevant context and weaves in what it finds, so it gets to know your community over time.
+
+- **It grows itself** — no need to feed it; conversation is remembered automatically.
+  `/brain remember <text>` pins a fact explicitly, and `/memory` notes still work too.
+- **It consolidates** — older memories turn into episode summaries (like sleep for the
+  brain), so the gist survives without keeping everything live. Runs automatically in
+  the background, or on demand with `/brain sleep`.
+- **You're in control** — `/brain off` pauses it for a server (nothing deleted); the
+  dashboard's *Brain* section per server lists and searches memories and lets you
+  forget individual ones.
+- Stores live in `DATA_DIR/mnemosyne/guild_<id>.db` on the Umbrel. `MNEMO_ENABLED=0`
+  switches the feature off entirely.
+
 ## Configuration (environment variables)
 
 Set under umbrelOS **Settings → Advanced → environment variables** (service `bot`).
@@ -62,6 +82,7 @@ Most settings can also be changed live from the [dashboard](#settings-dashboard)
 | `QUIET_HOURS` | `off` | `1-8` or `22-6` = no spontaneous messages in those hours (container-local time, i.e. UTC unless a TZ is set). |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for verbosity. |
 | `SOUL_FILE` | bundled `soul.md` | Path to a custom soul/personality file. |
+| `MNEMO_ENABLED` | `1` | `0` disables the Mnemosyne long-term memory (brain). |
 
 ## Discord setup (one-time)
 
@@ -73,6 +94,7 @@ Most settings can also be changed live from the [dashboard](#settings-dashboard)
 ## Privacy & behavior notes
 
 - Messages are only stored for channels where chime-in is on, capped per channel and pruned after 7 days. `/summarize`, `/summary` and `/catchup` read live from Discord and work anywhere the bot can read history, even with chime off.
+- Long-term memory (the brain) additionally stores message text in a per-server Mnemosyne database under `/data/mnemosyne/`; `/brain off` pauses it and the dashboard can delete individual memories.
 - Spontaneous messages respect per-channel cooldown, a daily cap, and quiet hours. If the model has nothing useful to add it stays silent (it's instructed to prefer SILENT).
 - The status dashboard is at `http://umbrel.local:8095` (JSON: `/status.json`, health: `/healthz`).
 
