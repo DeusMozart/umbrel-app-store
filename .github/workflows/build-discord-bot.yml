@@ -33,6 +33,6 @@ jobs:
           file: mozart-discord-bot/bot/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/deusmozart/mozart-discord-bot:1.7.1
+          tags: ghcr.io/deusmozart/mozart-discord-bot:1.8.0
           cache-from: type=gha
           cache-to: type=gha,mode=max

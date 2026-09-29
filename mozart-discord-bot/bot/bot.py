@@ -10,6 +10,7 @@ environment variables (Settings -> Advanced -> environment variables):
     LLM_API_KEY        API key for that endpoint
     LLM_MODEL          Model name (default: deepseek-v4.1-flash)
     LLM_REASONING      "on" lets the model think before answering (default "off")
+    LLM_REASONING_SUMMARIES  "off" makes summaries skim instead of thinking (default "on")
     DATA_DIR           SQLite + state directory (default /data)
     PORT               Status dashboard port (default 8095)
     QUIET_HOURS        e.g. "1-8" or "22-6"; "off" (default) disables
@@ -43,7 +44,7 @@ import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.7.1"
+VERSION = "1.8.0"
 CSRF_TOKEN = uuid.uuid4().hex[:24]  # guards dashboard POSTs; rotates on restart
 LOG = logging.getLogger("bot")
 
@@ -59,6 +60,7 @@ LLM_BASE_URL = env("LLM_BASE_URL", "https://opencode.ai/zen/go/v1").rstrip("/")
 LLM_API_KEY = env("LLM_API_KEY")
 LLM_MODEL = env("LLM_MODEL", "deepseek-v4.1-flash")
 LLM_REASONING = env("LLM_REASONING", "off").lower()
+LLM_REASONING_SUMMARIES = env("LLM_REASONING_SUMMARIES", "on").lower()
 DATA_DIR = env("DATA_DIR", "/data")
 PORT = int(env("PORT", "8095") or "8095")
 QUIET_HOURS = env("QUIET_HOURS", "off").lower()
@@ -107,14 +109,14 @@ SUMMARY_SYSTEM = """You summarize Discord conversations into a quick catch-up br
 Format (plain text, no markdown headings, no bold):
 - First line: "TL;DR: " followed by one sentence.
 - Then 3-8 short bullets, each starting with "- ", covering what was discussed, decided, and asked.
-Mention usernames when it matters who said or asked what. Be concrete: names, numbers, decisions.
+Mention usernames when it matters who said or asked what. Be concrete: names, numbers, decisions, exactly as written. Only include what actually appears in the messages; never invent or guess.
 Skip filler and pleasantries. If the stretch is mostly banter, say so in a short bullet."""
 
 SNIPPET_SYSTEM = """You write quick public recaps of Discord conversations.
 Reply with ONLY the recap: 2-4 short sentences, casual and natural. No bullet lists, no
 headings, no preamble, just the recap itself. Cover the gist, any decisions or plans,
 and anything left unresolved. Use names when it matters. If the stretch was mostly
-banter, say so in one line. Write like a person texting: no em-dashes, no bold."""
+banter, say so in one line. Only say what's actually in the messages, never invent. Write like a person texting: no em-dashes, no bold."""
 
 CATCHUP_NOTE = "Summarize what {name} missed in #{channel} since their last message there."
 CATCHUP_FALLBACK = (
@@ -392,6 +394,16 @@ def reasoning_enabled() -> bool:
     return v in ("1", "on", "true", "yes")
 
 
+def reasoning_summaries() -> bool:
+    """Should summaries (recaps, catch-ups) think it through first? Dashboard
+    first (cfg:llm_reasoning_summaries), then env; default on -- clearer, if a
+    bit slower. Chat replies are unaffected."""
+    v = str(db.get_kv("cfg:llm_reasoning_summaries") or "").strip().lower()
+    if not v:
+        v = LLM_REASONING_SUMMARIES
+    return v in ("1", "on", "true", "yes")
+
+
 def llm_settings() -> tuple[str, str, str]:
     """(base_url, model, api_key) — dashboard overrides win over env vars."""
     if db is None:
@@ -446,6 +458,7 @@ def msg_to_rowdict(m: discord.Message) -> dict | None:
 
 def build_transcript(rows, max_chars: int = 8000) -> str:
     lines = []
+    last_day = ""
     for r in rows:
         r = r if isinstance(r, dict) else dict(r)
         content = " ".join((r.get("content") or "").split())
@@ -454,7 +467,15 @@ def build_transcript(rows, max_chars: int = 8000) -> str:
         if len(content) > 400:
             content = content[:400] + "…"
         name = r["author_name"] + (" (bot)" if r.get("is_bot") else "")
-        lines.append(f"[{fmt_ts(r['ts'])}] {name}: {content}")
+        try:
+            dt = datetime.fromtimestamp(r["ts"])  # noqa: DTZ006
+            day, stamp = dt.strftime("%a %b %d"), dt.strftime("%H:%M")
+        except (TypeError, ValueError, OSError):
+            day, stamp = "", fmt_ts(r["ts"])
+        if day and day != last_day:  # day markers keep multi-day recaps straight
+            lines.append(f"--- {day} ---")
+            last_day = day
+        lines.append(f"[{stamp}] {name}: {content}")
     while lines and sum(len(x) + 1 for x in lines) > max_chars:
         lines.pop(0)
     return "\n".join(lines)
@@ -520,7 +541,8 @@ _reasoning_rejected: set = set()  # models that refused reasoning_effort:none
 
 
 async def llm_chat(system: str, user: str, max_tokens: int = 350,
-                   temperature: float = 0.7, session: str | None = None) -> str:
+                   temperature: float = 0.7, session: str | None = None,
+                   think: bool | None = None) -> str:
     base, model, key = llm_settings()
     if not key:
         raise LLMError("No LLM API key \u2014 add one in the app's Settings \u2192 Advanced \u2192 "
@@ -542,7 +564,8 @@ async def llm_chat(system: str, user: str, max_tokens: int = 350,
         # MissingSessionID without it); a stable per-channel key keeps the
         # upstream prompt cache warm.
         headers["x-opencode-session"] = session or f"oneshot-{uuid.uuid4().hex[:16]}"
-        if not reasoning_enabled() and model not in _reasoning_rejected:
+        want_reasoning = reasoning_enabled() if think is None else think
+        if not want_reasoning and model not in _reasoning_rejected:
             # Non-reasoning mode: skip the model's hidden thinking steps
             # (they burn tokens and add latency). Models that refuse the
             # flag are remembered and retried without it (see below).
@@ -1090,7 +1113,8 @@ async def run_summary(interaction: discord.Interaction, rows, title: str,
     user = f"{prompt_prefix}Conversation:\n\n{transcript}"
     try:
         text = await llm_chat(system, user, max_tokens=1400, temperature=0.35,
-                              session=f"discord-{interaction.channel.id}")
+                              session=f"discord-{interaction.channel.id}",
+                              think=reasoning_summaries())
     except LLMError as e:
         await interaction.followup.send(f"Can't summarize right now: {e}")
         return
@@ -1156,7 +1180,8 @@ async def summary(interaction: discord.Interaction, count: int = 100):
     try:
         text = await llm_chat(SNIPPET_SYSTEM, f"Conversation:\n\n{transcript}",
                               max_tokens=700, temperature=0.4,
-                              session=f"discord-{interaction.channel.id}")
+                              session=f"discord-{interaction.channel.id}",
+                              think=reasoning_summaries())
     except LLMError as e:
         await interaction.followup.send(f"Can't do a recap right now: {e}")
         return
@@ -1740,6 +1765,7 @@ def render_settings(saved: str = "", err: str = "") -> str:
     base, model, _key = llm_settings()
     key_src = llm_key_source() or "none set"
     r_on = reasoning_enabled()
+    rs_on = reasoning_summaries()
     qh = quiet_hours_spec()
     qh_val = "" if qh in ("", "off") else qh
     soul_override = db.get_kv("cfg:soul") or db.get_kv("persona")
@@ -1780,10 +1806,15 @@ def render_settings(saved: str = "", err: str = "") -> str:
       <select name="model" id="model-select">{opts}</select>
       <label>Custom model id (optional \u2014 overrides the dropdown)</label>
       <input type="text" name="model_custom" placeholder="e.g. deepseek-v4.1-flash">
-      <label>Reasoning \u2014 let the model think before answering (Zen models)</label>
+      <label>Reasoning for chat replies (Zen models)</label>
       <select name="reasoning">
         <option value="off"{' selected' if not r_on else ''}>off \u2014 faster, cheaper (default)</option>
         <option value="on"{' selected' if r_on else ''}>on \u2014 let it think it through</option>
+      </select>
+      <label>Summaries \u2014 think it through before recapping</label>
+      <select name="reasoning_summaries">
+        <option value="on"{' selected' if rs_on else ''}>on \u2014 clearer recaps (default)</option>
+        <option value="off"{' selected' if not rs_on else ''}>off \u2014 quick skim</option>
       </select>
       <label>API key</label>
       <input type="password" name="api_key" placeholder="leave blank to keep current ({esc(key_src)})" autocomplete="new-password">
@@ -1792,9 +1823,9 @@ def render_settings(saved: str = "", err: str = "") -> str:
       <div id="test-result" class="note"></div>
     </form>
     <div class="note">Key currently from: {esc(key_src)}. Blank fields fall back to the
-    app's environment variables. With reasoning off, replies skip the model's hidden
-    thinking steps; models that don't support the switch (e.g. glm-5.3) fall back
-    automatically.</div>
+    app's environment variables. Chat replies skip the model's hidden thinking steps
+    unless reasoning is on; summaries think it through by default so recaps stay clear.
+    Models that don't support the switch (e.g. glm-5.3) fall back automatically.</div>
   </div>
   <form method="post" action="/settings/llm/clear">
     <input type="hidden" name="csrf" value="{CSRF_TOKEN}">
@@ -2045,7 +2076,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 self._json(200, self._test_llm(f))
             elif path == "/settings/llm/clear":
                 for k in ("cfg:llm_base_url", "cfg:llm_model", "cfg:llm_api_key",
-                          "cfg:llm_reasoning"):
+                          "cfg:llm_reasoning", "cfg:llm_reasoning_summaries"):
                     db.del_kv(k)
                 self._redirect("/settings?saved=1")
             elif path == "/settings/soul":
@@ -2103,6 +2134,8 @@ class StatusHandler(BaseHTTPRequestHandler):
         if key:
             db.set_kv("cfg:llm_api_key", key)
         db.set_kv("cfg:llm_reasoning", "1" if f.get("reasoning") == "on" else "0")
+        db.set_kv("cfg:llm_reasoning_summaries",
+                  "0" if f.get("reasoning_summaries") == "off" else "1")
         self._redirect("/settings?saved=1")
 
     def _test_llm(self, f) -> dict:
@@ -2281,12 +2314,15 @@ def run_check() -> int:
     os.makedirs(DATA_DIR, exist_ok=True)
     db = DB(os.path.join(DATA_DIR, "bot.db"))
     now = time.time()
+    db.store_message("check-old", "0", "999", "1", "tester0", False,
+                     "old message from days ago", now - 2 * 86400)
     for i in range(5):
         db.store_message(f"check-{i}", "0", "999", "1", f"tester{i % 2}", False,
                          f"test message {i}", now - 300 + i * 30)
     rows = db.recent("999", limit=10)
     transcript = build_transcript(rows)
     assert "test message 4" in transcript
+    assert "--- " in transcript  # day markers for multi-day stretches
     print("transcript: OK")
     print(transcript)
     db.add_memory("0", "self-check note")
@@ -2332,7 +2368,7 @@ def run_check() -> int:
     base_url = f"http://127.0.0.1:{PORT}"
     with urllib.request.urlopen(f"{base_url}/settings", timeout=5) as r:
         page = r.read().decode()
-    assert "Model" in page and "Soul" in page and "Reasoning" in page and "csrf" in page
+    assert "Model" in page and "Soul" in page and "Reasoning" in page and "Summaries" in page and "csrf" in page
     with urllib.request.urlopen(f"{base_url}/settings/guild/0", timeout=5) as r:
         page = r.read().decode()
     assert "Persona" in page and "Memory" in page and "Brain" in page
@@ -2344,15 +2380,20 @@ def run_check() -> int:
             return r.read()
 
     post("/settings/llm", {"base_url": "https://example.com/v1", "model": "m",
-                           "model_custom": "", "api_key": "", "reasoning": "on"})
+                           "model_custom": "", "api_key": "", "reasoning": "on",
+                           "reasoning_summaries": "off"})
     assert db.get_kv("cfg:llm_base_url") == "https://example.com/v1"
     assert db.get_kv("cfg:llm_model") == "m"
     assert db.get_kv("cfg:llm_reasoning") == "1"
     assert reasoning_enabled()
+    assert db.get_kv("cfg:llm_reasoning_summaries") == "0"
+    assert reasoning_summaries() is False
     db.del_kv("cfg:llm_base_url")
     db.del_kv("cfg:llm_model")
     db.del_kv("cfg:llm_reasoning")
-    assert reasoning_enabled() is False  # default: non-reasoning
+    db.del_kv("cfg:llm_reasoning_summaries")
+    assert reasoning_enabled() is False       # default: non-reasoning chat
+    assert reasoning_summaries() is True      # default: summaries think
     post("/settings/soul", {"text": "dashboard soul test"})
     assert db.get_kv("cfg:soul") == "dashboard soul test"
     post("/settings/soul/reset", {})

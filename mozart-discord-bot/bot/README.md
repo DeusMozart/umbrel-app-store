@@ -27,9 +27,11 @@ The bot's dashboard — linked as **Settings** at `http://umbrel.local:8095` —
 everything live, no restart needed:
 
 - **LLM** — base URL, model (dropdown populated from the endpoint's `/models`, or type a
-  custom id), a **Reasoning** switch (off by default — skips the model's hidden thinking
-  steps so replies come faster and cheaper; models that don't support the switch fall back
-  automatically) and API key. *Test connection* verifies the values before you save.
+  custom id), a **Reasoning** switch for chat replies (off by default — skips the model's
+  hidden thinking steps so replies come faster and cheaper) and a **Summaries** switch
+  (on by default — recaps think it through before writing, so they stay coherent), plus
+  API key. Models that don't support the switch fall back automatically. *Test connection*
+  verifies the values before you save.
 - **Quiet hours** — same setting as `QUIET_HOURS`, editable without touching env vars.
 - **Per server** — channel chime on/off + mood, persona, and memory notes, with the same
   effect as the slash commands.
@@ -80,6 +82,7 @@ Most settings can also be changed live from the [dashboard](#settings-dashboard)
 | `LLM_BASE_URL` | `https://opencode.ai/zen/go/v1` | Any OpenAI-compatible base URL (OpenAI: `https://api.openai.com/v1`, OpenRouter, Ollama via `http://host.docker.internal:11434/v1`, …). |
 | `LLM_MODEL` | `deepseek-v4.1-flash` | Model name for the endpoint. |
 | `LLM_REASONING` | `off` | `on` lets the model think before answering (Zen models); `off` skips hidden thinking → faster, cheaper replies. |
+| `LLM_REASONING_SUMMARIES` | `on` | Let summaries think before writing; `off` = quick skim without thinking. Chat replies unaffected. |
 | `DATA_DIR` | `/data` | Where the SQLite memory lives. |
 | `PORT` | `8095` | Status dashboard port. |
 | `QUIET_HOURS` | `off` | `1-8` or `22-6` = no spontaneous messages in those hours (container-local time, i.e. UTC unless a TZ is set). |
