@@ -2,7 +2,7 @@ manifestVersion: 1
 id: mozart-opendots
 category: ai
 name: OpenDots
-version: "1.0.0"
+version: "1.0.1"
 tagline: A workspace for always-on AI coworkers
 description: >-
   OpenDots is a workspace for persistent specialist AI agents ("Dots"). Give each Dot a name, role, instructions and tools; keep work in Spaces with a visual page editor; review drafts before they save; and schedule recurring tasks. Optional extras — voice, Slack, per-Dot computers — are off by default.
@@ -20,7 +20,7 @@ repo: https://github.com/DeusMozart/umbrel-app-store
 support: https://github.com/DeusMozart/umbrel-app-store/issues
 gallery: []
 releaseNotes: >-
-  1.0.0: first packaging — single server container (web UI + API), Umbrel-generated app password doubles as the owner access token shown on the unlock screen.
+  1.0.1: startup fix — umbrelOS mounts app data root-owned; the container now normalizes /data ownership before dropping to the node user.
 dependencies: []
 path: ""
 defaultUsername: ""

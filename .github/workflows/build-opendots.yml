@@ -24,6 +24,10 @@ jobs:
           repository: CopilotKit/OpenDots
           ref: c2569bb6a13a22e565cf3eb791c62267d06babb1
           path: src
+      - name: Prepare build context
+        run: |
+          cp -r mozart-opendots/docker src/.opendots-docker
+          echo ".git" > src/.dockerignore
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
@@ -36,10 +40,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./src
-          file: ./src/Dockerfile
-          target: app
+          file: ./src/.opendots-docker/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/deusmozart/mozart-opendots:1.0.0
+          tags: ghcr.io/deusmozart/mozart-opendots:1.0.1
           cache-from: type=gha
           cache-to: type=gha,mode=max

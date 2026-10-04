@@ -15,7 +15,7 @@ services:
   #   OPENAI_API_KEY, OPENAI_MODEL (optional OPENAI_BASE_URL) — model provider
   # Optional: VOICE_API_KEY, VOICE_MODEL, PARALLEL_API_KEY, SLACK_*
   app:
-    image: ghcr.io/deusmozart/mozart-opendots:1.0.0
+    image: ghcr.io/deusmozart/mozart-opendots:1.0.1
     restart: unless-stopped
     init: true
     environment:

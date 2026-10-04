@@ -1,12 +1,21 @@
 # mozart-opendots image provenance
 
-Built by `.github/workflows/build-opendots.yml` directly from upstream — no local patches:
+Built by `.github/workflows/build-opendots.yml` from upstream + one small entrypoint patch:
 
 - Upstream: https://github.com/CopilotKit/OpenDots (MIT)
 - Pinned commit: `c2569bb6a13a22e565cf3eb791c62267d06babb1` ("feat: add Parallel search and extraction to research", Oct 2 2026)
-- Build: upstream `Dockerfile`, stage `app` (`target: app`), platform linux/amd64
-- Published: `ghcr.io/deusmozart/mozart-opendots:1.0.0`
+- Build: `mozart-opendots/docker/Dockerfile` (build stage mirrors upstream verbatim; runtime stage
+  adds `entrypoint.sh`), platform linux/amd64
+- Published: `ghcr.io/deusmozart/mozart-opendots:1.0.1`
 - Icon: upstream `public/favicon.svg`
+
+## Why the entrypoint patch (1.0.1)
+umbrelOS creates app data directories (`/home/umbrel/umbrel/app-data/<id>/data`, surfaced as
+`/Apps/<id>/data`) **root-owned**, while upstream's image runs as the `node` user (uid 1000) →
+SQLite fails with `unable to open database file` and the container crash-loops. The entrypoint
+starts as root, normalizes `/data` ownership (`chown -R node:node`, chmod fallback — the same
+handoff pattern used for the OpenMuse browser worker), echoes `ls -ld /data` before/after into the
+app logs, then drops to node via `setpriv`. Everything else is upstream verbatim.
 
 ## Why `${APP_PASSWORD}` is the owner token
 `src/server/index.ts` refuses to bind an external HOST without `OWNER_TOKEN` (≥24 chars), so the
@@ -28,7 +37,7 @@ password Umbrel already shows them; no manual env editing needed for access.
 
 ## Updating
 1. Bump the pinned `ref:` in the workflow to the new upstream commit.
-2. Bump the image tag in the workflow AND in `docker-compose.yml`.
+2. Bump the image tag in the workflow AND in `docker-compose.yml` (keep the `docker/` path trigger in mind).
 3. Bump `version:` in `umbrel-app.yml` + add release notes.
 4. Push → wait for the Actions build (`gh run watch`) → verify the GHCR manifest is anonymously
    pullable → `update_app('mozart-opendots')` via the umbrel MCP, then poll `get_app_status` to `ready`.
