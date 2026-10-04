@@ -1,0 +1,32 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      # Format: <app-id>_<docker-service-name>_1
+      APP_HOST: mozart-opendots_app_1
+      APP_PORT: 4310
+
+  # OpenDots: server + built web UI in one container.
+  #
+  # Secrets are NOT in this file. Add them in the umbrelOS UI under
+  # Settings -> Advanced -> environment variables (service "app"):
+  #   INTELLIGENCE_API_KEY — CopilotKit Intelligence project key
+  #   OPENAI_API_KEY, OPENAI_MODEL (optional OPENAI_BASE_URL) — model provider
+  # Optional: VOICE_API_KEY, VOICE_MODEL, PARALLEL_API_KEY, SLACK_*
+  app:
+    image: ghcr.io/deusmozart/mozart-opendots:1.0.0
+    restart: unless-stopped
+    init: true
+    environment:
+      - HOST=0.0.0.0
+      - OWNER_ID=opendots-owner
+      # Umbrel-generated app password = the owner access token. The same value
+      # Umbrel shows as this app's password (deterministicPassword in the
+      # manifest). Required because the server refuses external binds without
+      # an OWNER_TOKEN of at least 24 characters.
+      - OWNER_TOKEN=${APP_PASSWORD}
+      - DATABASE_PATH=/data/opendots.sqlite
+      - WEB_SEARCH_PROVIDER=parallel
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
