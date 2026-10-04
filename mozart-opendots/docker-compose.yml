@@ -13,9 +13,11 @@ services:
   # Settings -> Advanced -> environment variables (service "app"):
   #   INTELLIGENCE_API_KEY — CopilotKit Intelligence project key
   #   OPENAI_API_KEY, OPENAI_MODEL (optional OPENAI_BASE_URL) — model provider
+  #   OPENCODE_SESSION_ID — OpenCode Go only: sent as the x-opencode-session
+  #     routing header (any stable string, e.g. opendots-umbrel)
   # Optional: VOICE_API_KEY, VOICE_MODEL, PARALLEL_API_KEY, SLACK_*
   app:
-    image: ghcr.io/deusmozart/mozart-opendots:1.0.1
+    image: ghcr.io/deusmozart/mozart-opendots:1.0.2
     restart: unless-stopped
     init: true
     environment:

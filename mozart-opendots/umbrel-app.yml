@@ -2,12 +2,12 @@ manifestVersion: 1
 id: mozart-opendots
 category: ai
 name: OpenDots
-version: "1.0.1"
+version: "1.0.2"
 tagline: A workspace for always-on AI coworkers
 description: >-
   OpenDots is a workspace for persistent specialist AI agents ("Dots"). Give each Dot a name, role, instructions and tools; keep work in Spaces with a visual page editor; review drafts before they save; and schedule recurring tasks. Optional extras — voice, Slack, per-Dot computers — are off by default.
 
-  Runs in setup state out of the box. To start chatting, add a model provider key (any OpenAI-compatible endpoint: OPENAI_API_KEY, optional OPENAI_BASE_URL, OPENAI_MODEL) and a CopilotKit Intelligence key (INTELLIGENCE_API_KEY) in the app's settings — Settings → Advanced → environment variables, service "app".
+  Runs in setup state out of the box. To start chatting, add a model provider key (any OpenAI-compatible endpoint: OPENAI_API_KEY, optional OPENAI_BASE_URL, OPENAI_MODEL) and a CopilotKit Intelligence key (INTELLIGENCE_API_KEY) in the app's settings — Settings → Advanced → environment variables, service "app". On OpenCode Go, also set OPENCODE_SESSION_ID (any stable string) so model requests carry the required routing header.
 
   OpenDots asks for an owner access token on first open — use the app password Umbrel shows for this app.
 
@@ -20,6 +20,8 @@ repo: https://github.com/DeusMozart/umbrel-app-store
 support: https://github.com/DeusMozart/umbrel-app-store/issues
 gallery: []
 releaseNotes: >-
+  1.0.2: OpenCode Go support — model requests now carry the x-opencode-session routing header when OPENCODE_SESSION_ID is set (required by OpenCode Go for routing and prompt caching). Set OPENCODE_SESSION_ID alongside the model keys when using OpenCode Go.
+
   1.0.1: startup fix — umbrelOS mounts app data root-owned; the container now normalizes /data ownership before dropping to the node user.
 dependencies: []
 path: ""
