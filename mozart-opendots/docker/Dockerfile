@@ -1,4 +1,4 @@
-# mozart-opendots build: upstream OpenDots + ownership-fixing entrypoint + OpenCode Go header patch + Dot-computers endpoint patch + chat UUID fallback patch.
+# mozart-opendots build: upstream OpenDots + ownership-fixing entrypoint + OpenCode Go header patch + Dot-computers endpoint patch + chat UUID fallback patch + make-it-yours pack (delete Dot, reasoning view, per-Dot model, computer panel).
 # Build context: a checkout of https://github.com/CopilotKit/OpenDots at the pinned
 # commit, with this docker/ folder copied to .opendots-docker/ (see the workflow).
 # The build stage mirrors upstream's Dockerfile with patch steps added before the build:
@@ -7,7 +7,10 @@
 # fixes the computer endpoint checks for split deployments (app and supervisor
 # on different hosts: host acceptance + URL fallback). docker/apply-crypto-patch.mjs
 # swaps a client-side crypto.randomUUID call for a fallback so chat sends work
-# over plain HTTP (non-secure contexts). The runtime stage adds docker/entrypoint.sh
+# over plain HTTP (non-secure contexts). The make-it-yours pack
+# (apply-delete-dot, apply-reasoning, apply-dot-model, apply-computer-ui)
+# adds owner conveniences upstream lacks — see docker/README.md. The runtime
+# stage adds docker/entrypoint.sh
 # and starts as root so it can normalize /data ownership.
 
 FROM node:24-bookworm-slim AS build
@@ -18,6 +21,10 @@ COPY . .
 RUN node .opendots-docker/apply-opencode-patch.mjs
 RUN node .opendots-docker/apply-computers-patch.mjs
 RUN node .opendots-docker/apply-crypto-patch.mjs
+RUN node .opendots-docker/apply-delete-dot-patch.mjs
+RUN node .opendots-docker/apply-reasoning-patch.mjs
+RUN node .opendots-docker/apply-dot-model-patch.mjs
+RUN node .opendots-docker/apply-computer-ui-patch.mjs
 RUN npm run build
 
 FROM node:24-bookworm-slim

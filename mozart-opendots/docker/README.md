@@ -1,13 +1,13 @@
 # mozart-opendots image provenance
 
-Built by `.github/workflows/build-opendots.yml` from upstream + four small build-time patches:
+Built by `.github/workflows/build-opendots.yml` from upstream + seven small build-time patches:
 
 - Upstream: https://github.com/CopilotKit/OpenDots (MIT)
 - Pinned commit: `c2569bb6a13a22e565cf3eb791c62267d06babb1` ("feat: add Parallel search and extraction to research", Oct 2 2026)
 - Build: `mozart-opendots/docker/Dockerfile` (build stage mirrors upstream with added patch steps (OpenCode
-  header + computers endpoint + chat UUID fallback); runtime stage
+  header + computers endpoint + chat UUID fallback + make-it-yours pack); runtime stage
   adds `entrypoint.sh`), platform linux/amd64
-- Published: `ghcr.io/deusmozart/mozart-opendots:1.0.5`
+- Published: `ghcr.io/deusmozart/mozart-opendots:1.1.0`
 - Icon: upstream `public/favicon.svg`
 
 ## Why the entrypoint patch (1.0.1)
@@ -61,6 +61,26 @@ response", "thinking" forever, every later send a no-op) while the server side s
 Same fail-closed anchor pattern as the other patches. (Worth reporting upstream: any non-secure
 deployment — LAN, reverse-proxy without TLS — hits this.)
 
+## The make-it-yours pack (1.1.0)
+Four patches that add the owner conveniences upstream (pinned c2569bb) does not have — all fail-closed
+and idempotent, all verified to compile against the pinned source (`npm ci && npm run build` + `tsc --noEmit`).
+
+- **`apply-delete-dot-patch.mjs` — delete a Dot.** Upstream has no delete path at all (no UI, no route,
+  no store method). Adds `DELETE /dots/:id` + a two-step "Delete this Dot" control in the Dot editor.
+  Cascades the Dot's conversations (thread_bindings), captures, calls, scheduled tasks (+runs/events),
+  space links, computer permissions/audit, then the Dot row — and best-effort resets the Dot's computer
+  via the supervisor (`/computers/:id/reset`); deletion still proceeds when the supervisor is offline.
+- **`apply-reasoning-patch.mjs` — reasoning view.** Reasoning-capable models stream a reasoning trace
+  that OpenDots persists as messages with role `reasoning`, then filters out of the transcript. The patch
+  includes them in the visible transcript and renders each as a collapsed `<details>` disclosure.
+- **`apply-dot-model-patch.mjs` — per-Dot model.** Adds a `dots.model` column (+migration), accepts
+  `model` in the dot schema, uses `dot.model` in the TanStack adapter when set (falls back to
+  `OPENAI_MODEL`), and adds `GET /models` (provider model list, 5-min cache, key never leaves the server)
+  plus a Model select in the Dot editor.
+- **`apply-computer-ui-patch.mjs` — computer panel in the Dot editor.** Computers are configured at the
+  deployment level (env vars), so nothing can "add" one per Dot — but the editor now shows the computer's
+  state and permission summary with Start/Stop buttons reusing the existing `/dots/:id/computer` routes.
+
 ## Why `${APP_PASSWORD}` is the owner token
 `src/server/index.ts` refuses to bind an external HOST without `OWNER_TOKEN` (≥24 chars), so the
 container cannot start with `HOST=0.0.0.0` unless a token is set. Umbrel derives `$APP_PASSWORD`
@@ -84,8 +104,9 @@ password Umbrel already shows them; no manual env editing needed for access.
 1. Bump the pinned `ref:` in the workflow to the new upstream commit.
 2. Bump the image tag in the workflow AND in `docker-compose.yml` (keep the `docker/` path trigger in mind).
 3. Bump `version:` in `umbrel-app.yml` + add release notes.
-4. Re-run all patch scripts (`node docker/apply-opencode-patch.mjs`, `node docker/apply-computers-patch.mjs`,
-   `node docker/apply-crypto-patch.mjs`) against the new commit's checkout to confirm the anchors
-   still match before pushing (each must patch exactly once).
+4. Re-run all patch scripts (`node docker/apply-opencode-patch.mjs`, `apply-computers-patch.mjs`,
+   `apply-crypto-patch.mjs`, `apply-delete-dot-patch.mjs`, `apply-reasoning-patch.mjs`,
+   `apply-dot-model-patch.mjs`, `apply-computer-ui-patch.mjs`) against the new commit's checkout to
+   confirm the anchors still match before pushing (each must patch exactly once; they are idempotent).
 5. Push → wait for the Actions build (`gh run watch`) → verify the GHCR manifest is anonymously
    pullable → `update_app('mozart-opendots')` via the umbrel MCP, then poll `get_app_status` to `ready`.

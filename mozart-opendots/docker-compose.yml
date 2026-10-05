@@ -20,7 +20,7 @@ services:
   #     until these are set. The two tokens must match the supervisor's.
   # Optional: VOICE_API_KEY, VOICE_MODEL, PARALLEL_API_KEY, SLACK_*
   app:
-    image: ghcr.io/deusmozart/mozart-opendots:1.0.5
+    image: ghcr.io/deusmozart/mozart-opendots:1.1.0
     restart: unless-stopped
     init: true
     environment:

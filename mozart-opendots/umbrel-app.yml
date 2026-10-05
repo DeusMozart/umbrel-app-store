@@ -2,7 +2,7 @@ manifestVersion: 1
 id: mozart-opendots
 category: ai
 name: OpenDots
-version: "1.0.5"
+version: "1.1.0"
 tagline: A workspace for always-on AI coworkers
 description: >-
   OpenDots is a workspace for persistent specialist AI agents ("Dots"). Give each Dot a name, role, instructions and tools; keep work in Spaces with a visual page editor; review drafts before they save; and schedule recurring tasks. Optional extras — voice, Slack, per-Dot computers — are off by default.
@@ -11,7 +11,7 @@ description: >-
 
   OpenDots asks for an owner access token on first open — use the app password Umbrel shows for this app.
 
-  Alpha software, self-hosted. Based on CopilotKit OpenDots (MIT), pinned to commit c2569bb.
+  Alpha software, self-hosted. Based on CopilotKit OpenDots (MIT), pinned to commit c2569bb. This build adds owner conveniences upstream doesn't have yet: delete a Dot (its conversations and computer go with it), a collapsible reasoning view in chat, a per-Dot model picker, and computer status/controls in the Dot editor.
 developer: DeusMozart
 website: https://github.com/CopilotKit/OpenDots
 submitter: DeusMozart
@@ -20,6 +20,8 @@ repo: https://github.com/DeusMozart/umbrel-app-store
 support: https://github.com/DeusMozart/umbrel-app-store/issues
 gallery: []
 releaseNotes: >-
+  1.1.0: make-it-yours pack — delete a Dot (its conversations and computer go with it), see each Dot's reasoning trace in chat (collapsed under the reply), choose a model per Dot (workspace default remains), and manage a Dot's computer from its editor (status, permissions summary, start/stop).
+
   1.0.5: chat fix for plain-HTTP installs — the chat composer used crypto.randomUUID, which browsers only expose in secure contexts (HTTPS or localhost). Over the usual http:// Umbrel address the first send failed silently and the chat stayed stuck on "thinking". Sends now use a safe fallback.
 
   1.0.4: Dot computers (hardening) — endpoint handling for split deployments (app and computer supervisor on different hosts): a supervisor-provided computer address is accepted as-is, and a port-only response no longer assumes loopback. No visible change unless computers are enabled.
