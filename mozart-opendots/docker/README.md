@@ -7,7 +7,7 @@ Built by `.github/workflows/build-opendots.yml` from upstream + three small buil
 - Build: `mozart-opendots/docker/Dockerfile` (build stage mirrors upstream with added patch steps (OpenCode
   header + computers endpoint); runtime stage
   adds `entrypoint.sh`), platform linux/amd64
-- Published: `ghcr.io/deusmozart/mozart-opendots:1.0.3`
+- Published: `ghcr.io/deusmozart/mozart-opendots:1.0.4`
 - Icon: upstream `public/favicon.svg`
 
 ## Why the entrypoint patch (1.0.1)
@@ -37,8 +37,18 @@ upstream's endpoint check rejects (it accepts only a shared-network container na
 supervisor itself is on loopback). `docker/apply-computers-patch.mjs` widens the check to accept exactly
 the supervisor's own hostname; single-host behaviour is unchanged and any other host is still rejected.
 Enabled by setting `COMPUTER_SUPERVISOR_URL`, `COMPUTER_SUPERVISOR_TOKEN`, `COMPUTER_TOKEN` (and
-optionally `COMPUTER_NAMESPACE`) in the app's environment; off until then. The supervisor side lives in
-`~/opendots-computers` on the VM (see its README there).
+optionally `COMPUTER_NAMESPACE`) in the app's environment; off until then. Transport: the app
+reaches the supervisor over the tailnet — umbrelOS's machine network (libvirt, port-isolated NAT)
+rejects app-container traffic to 10.203.0.x outright, and tailscale is the path the house already
+uses for VM services. The supervisor side lives in `~/opendots-computers` on the VM (see its README
+there).
+
+## Why the computers fallback patch (1.0.4)
+The 1.0.3 patch widened the endpoint check to the supervisor's host; the URL fallback in the same
+function still assumed loopback for a supervisor response that carries only a port. 1.0.4 extends
+`apply-computers-patch.mjs` to use the supervisor's host there too, so a supervisor that omits the
+URL field cannot make the app reject a valid computer. Pairs with the supervisor-side fix (its
+computer list now includes the URL) from `~/opendots-computers` on the VM.
 
 ## Why `${APP_PASSWORD}` is the owner token
 `src/server/index.ts` refuses to bind an external HOST without `OWNER_TOKEN` (≥24 chars), so the

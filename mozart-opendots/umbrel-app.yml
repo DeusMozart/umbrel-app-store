@@ -2,7 +2,7 @@ manifestVersion: 1
 id: mozart-opendots
 category: ai
 name: OpenDots
-version: "1.0.3"
+version: "1.0.4"
 tagline: A workspace for always-on AI coworkers
 description: >-
   OpenDots is a workspace for persistent specialist AI agents ("Dots"). Give each Dot a name, role, instructions and tools; keep work in Spaces with a visual page editor; review drafts before they save; and schedule recurring tasks. Optional extras — voice, Slack, per-Dot computers — are off by default.
@@ -20,6 +20,8 @@ repo: https://github.com/DeusMozart/umbrel-app-store
 support: https://github.com/DeusMozart/umbrel-app-store/issues
 gallery: []
 releaseNotes: >-
+  1.0.4: Dot computers (hardening) — endpoint handling for split deployments (app and computer supervisor on different hosts): a supervisor-provided computer address is accepted as-is, and a port-only response no longer assumes loopback. No visible change unless computers are enabled.
+
   1.0.3: Dot computers — optional per-Dot computer support (browser, files, shell) through an OpenBot supervisor. Set COMPUTER_SUPERVISOR_URL, COMPUTER_SUPERVISOR_TOKEN and COMPUTER_TOKEN in the app's environment variables (service "app"); computers stay off until then.
 
   1.0.2: OpenCode Go support — model requests now carry the x-opencode-session routing header when OPENCODE_SESSION_ID is set (required by OpenCode Go for routing and prompt caching). Set OPENCODE_SESSION_ID alongside the model keys when using OpenCode Go.

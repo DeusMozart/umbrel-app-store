@@ -4,8 +4,8 @@
 # The build stage mirrors upstream's Dockerfile with two additions before the build:
 # docker/apply-opencode-patch.mjs injects the x-opencode-session routing header
 # (OpenCode Go) into the model call sites, and docker/apply-computers-patch.mjs
-# widens the computer endpoint check for split deployments (app and supervisor
-# on different hosts). The runtime stage adds docker/entrypoint.sh
+# fixes the computer endpoint checks for split deployments (app and supervisor
+# on different hosts: host acceptance + URL fallback). The runtime stage adds docker/entrypoint.sh
 # and starts as root so it can normalize /data ownership.
 
 FROM node:24-bookworm-slim AS build
