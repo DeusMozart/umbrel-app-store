@@ -1,13 +1,13 @@
 # mozart-opendots image provenance
 
-Built by `.github/workflows/build-opendots.yml` from upstream + three small build-time patches:
+Built by `.github/workflows/build-opendots.yml` from upstream + four small build-time patches:
 
 - Upstream: https://github.com/CopilotKit/OpenDots (MIT)
 - Pinned commit: `c2569bb6a13a22e565cf3eb791c62267d06babb1` ("feat: add Parallel search and extraction to research", Oct 2 2026)
 - Build: `mozart-opendots/docker/Dockerfile` (build stage mirrors upstream with added patch steps (OpenCode
-  header + computers endpoint); runtime stage
+  header + computers endpoint + chat UUID fallback); runtime stage
   adds `entrypoint.sh`), platform linux/amd64
-- Published: `ghcr.io/deusmozart/mozart-opendots:1.0.4`
+- Published: `ghcr.io/deusmozart/mozart-opendots:1.0.5`
 - Icon: upstream `public/favicon.svg`
 
 ## Why the entrypoint patch (1.0.1)
@@ -50,6 +50,17 @@ function still assumed loopback for a supervisor response that carries only a po
 URL field cannot make the app reject a valid computer. Pairs with the supervisor-side fix (its
 computer list now includes the URL) from `~/opendots-computers` on the VM.
 
+## Why the chat UUID patch (1.0.5)
+Upstream's chat composer builds every outbound user message with `crypto.randomUUID()`
+(`src/client/Chat.tsx`). Browsers expose `crypto.randomUUID` only in **secure contexts**; over
+plain `http://umbrel.local:4310` it is `undefined`, so the first send threw *before* the message
+was added — silently locking the composer (`running` stuck true, the button showing "Stop
+response", "thinking" forever, every later send a no-op) while the server side stayed healthy.
+`docker/apply-crypto-patch.mjs` swaps the call for a local helper that prefers
+`crypto.randomUUID` and falls back to a v4-shaped id, so sends work over http and https alike.
+Same fail-closed anchor pattern as the other patches. (Worth reporting upstream: any non-secure
+deployment — LAN, reverse-proxy without TLS — hits this.)
+
 ## Why `${APP_PASSWORD}` is the owner token
 `src/server/index.ts` refuses to bind an external HOST without `OWNER_TOKEN` (≥24 chars), so the
 container cannot start with `HOST=0.0.0.0` unless a token is set. Umbrel derives `$APP_PASSWORD`
@@ -73,8 +84,8 @@ password Umbrel already shows them; no manual env editing needed for access.
 1. Bump the pinned `ref:` in the workflow to the new upstream commit.
 2. Bump the image tag in the workflow AND in `docker-compose.yml` (keep the `docker/` path trigger in mind).
 3. Bump `version:` in `umbrel-app.yml` + add release notes.
-4. Re-run both patch scripts (`node docker/apply-opencode-patch.mjs` and
-   `node docker/apply-computers-patch.mjs`) against the new commit's checkout to confirm the anchors
+4. Re-run all patch scripts (`node docker/apply-opencode-patch.mjs`, `node docker/apply-computers-patch.mjs`,
+   `node docker/apply-crypto-patch.mjs`) against the new commit's checkout to confirm the anchors
    still match before pushing (each must patch exactly once).
 5. Push → wait for the Actions build (`gh run watch`) → verify the GHCR manifest is anonymously
    pullable → `update_app('mozart-opendots')` via the umbrel MCP, then poll `get_app_status` to `ready`.
