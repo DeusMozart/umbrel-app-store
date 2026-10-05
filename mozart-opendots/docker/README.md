@@ -83,6 +83,18 @@ and idempotent, all verified to compile against the pinned source (`npm ci && np
   Start requires permissions to be enabled first (the app's safety design — granted in the chat's computer
   panel); when they are not, the section says so instead of offering a button that would fail.
 
+## Dark mode (1.2.0)
+`apply-dark-mode-patch.mjs` adds a full dark theme, shipped as a *generated* override layer rather than
+a hand edit: it parses the pinned `style.css` + `editor.css`, maps every background / text / border /
+shadow color to a dark equivalent (luminance + saturation model — grays re-tiered, accents lightened,
+dark veils kept dark), and appends the result scoped entirely under `html[data-theme='dark']`, so light
+mode is byte-identical to upstream. It also adds `theme.ts` (choice persisted in
+`localStorage['opendots-theme']`; follows `prefers-color-scheme` in system mode; updates the
+`theme-color` meta) and `ThemeToggle.tsx` (sidebar control cycling system → light → dark).
+**This patch runs FIRST in the chain and fails closed on a sha256 mismatch** of either stylesheet —
+the mapping is generated *from* those exact files, so an upstream stylesheet change must be
+re-reviewed (and the two expected hashes updated) rather than silently re-mapped.
+
 ## Why `${APP_PASSWORD}` is the owner token
 `src/server/index.ts` refuses to bind an external HOST without `OWNER_TOKEN` (≥24 chars), so the
 container cannot start with `HOST=0.0.0.0` unless a token is set. Umbrel derives `$APP_PASSWORD`
@@ -106,9 +118,12 @@ password Umbrel already shows them; no manual env editing needed for access.
 1. Bump the pinned `ref:` in the workflow to the new upstream commit.
 2. Bump the image tag in the workflow AND in `docker-compose.yml` (keep the `docker/` path trigger in mind).
 3. Bump `version:` in `umbrel-app.yml` + add release notes.
-4. Re-run all patch scripts (`node docker/apply-opencode-patch.mjs`, `apply-computers-patch.mjs`,
-   `apply-crypto-patch.mjs`, `apply-delete-dot-patch.mjs`, `apply-reasoning-patch.mjs`,
-   `apply-dot-model-patch.mjs`, `apply-computer-ui-patch.mjs`) against the new commit's checkout to
-   confirm the anchors still match before pushing (each must patch exactly once; they are idempotent).
+4. Re-run all patch scripts (`node docker/apply-dark-mode-patch.mjs` FIRST — it verifies the raw
+   stylesheet sha256s and regenerates the dark layer; on a bump its hash check fails by design, so
+   review the stylesheet diff and update the two expected hashes — then `apply-opencode-patch.mjs`,
+   `apply-computers-patch.mjs`, `apply-crypto-patch.mjs`, `apply-delete-dot-patch.mjs`,
+   `apply-reasoning-patch.mjs`, `apply-dot-model-patch.mjs`, `apply-computer-ui-patch.mjs`) against the
+   new commit's checkout to confirm the anchors still match before pushing (each must patch exactly
+   once; they are idempotent).
 5. Push → wait for the Actions build (`gh run watch`) → verify the GHCR manifest is anonymously
    pullable → `update_app('mozart-opendots')` via the umbrel MCP, then poll `get_app_status` to `ready`.
