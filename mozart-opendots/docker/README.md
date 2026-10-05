@@ -80,6 +80,8 @@ and idempotent, all verified to compile against the pinned source (`npm ci && np
 - **`apply-computer-ui-patch.mjs` — computer panel in the Dot editor.** Computers are configured at the
   deployment level (env vars), so nothing can "add" one per Dot — but the editor now shows the computer's
   state and permission summary with Start/Stop buttons reusing the existing `/dots/:id/computer` routes.
+  Start requires permissions to be enabled first (the app's safety design — granted in the chat's computer
+  panel); when they are not, the section says so instead of offering a button that would fail.
 
 ## Why `${APP_PASSWORD}` is the owner token
 `src/server/index.ts` refuses to bind an external HOST without `OWNER_TOKEN` (≥24 chars), so the
