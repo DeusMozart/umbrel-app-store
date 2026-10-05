@@ -15,9 +15,12 @@ services:
   #   OPENAI_API_KEY, OPENAI_MODEL (optional OPENAI_BASE_URL) — model provider
   #   OPENCODE_SESSION_ID — OpenCode Go only: sent as the x-opencode-session
   #     routing header (any stable string, e.g. opendots-umbrel)
+  #   COMPUTER_SUPERVISOR_URL, COMPUTER_SUPERVISOR_TOKEN, COMPUTER_TOKEN —
+  #     per-Dot computers (OpenBot supervisor). Optional; computers stay off
+  #     until these are set. The two tokens must match the supervisor's.
   # Optional: VOICE_API_KEY, VOICE_MODEL, PARALLEL_API_KEY, SLACK_*
   app:
-    image: ghcr.io/deusmozart/mozart-opendots:1.0.2
+    image: ghcr.io/deusmozart/mozart-opendots:1.0.3
     restart: unless-stopped
     init: true
     environment:
@@ -30,5 +33,7 @@ services:
       - OWNER_TOKEN=${APP_PASSWORD}
       - DATABASE_PATH=/data/opendots.sqlite
       - WEB_SEARCH_PROVIDER=parallel
+      # Stable per-deployment namespace for computer containers/volumes.
+      - COMPUTER_NAMESPACE=opendots
     volumes:
       - ${APP_DATA_DIR}/data:/data

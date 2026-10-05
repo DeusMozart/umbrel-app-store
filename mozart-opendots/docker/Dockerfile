@@ -1,9 +1,11 @@
-# mozart-opendots build: upstream OpenDots + ownership-fixing entrypoint + OpenCode Go header patch.
+# mozart-opendots build: upstream OpenDots + ownership-fixing entrypoint + OpenCode Go header patch + Dot-computers endpoint patch.
 # Build context: a checkout of https://github.com/CopilotKit/OpenDots at the pinned
 # commit, with this docker/ folder copied to .opendots-docker/ (see the workflow).
-# The build stage mirrors upstream's Dockerfile with one addition before the build:
+# The build stage mirrors upstream's Dockerfile with two additions before the build:
 # docker/apply-opencode-patch.mjs injects the x-opencode-session routing header
-# (OpenCode Go) into the model call sites. The runtime stage adds docker/entrypoint.sh
+# (OpenCode Go) into the model call sites, and docker/apply-computers-patch.mjs
+# widens the computer endpoint check for split deployments (app and supervisor
+# on different hosts). The runtime stage adds docker/entrypoint.sh
 # and starts as root so it can normalize /data ownership.
 
 FROM node:24-bookworm-slim AS build
@@ -12,6 +14,7 @@ COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN node .opendots-docker/apply-opencode-patch.mjs
+RUN node .opendots-docker/apply-computers-patch.mjs
 RUN npm run build
 
 FROM node:24-bookworm-slim

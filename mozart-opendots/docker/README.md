@@ -1,12 +1,13 @@
 # mozart-opendots image provenance
 
-Built by `.github/workflows/build-opendots.yml` from upstream + two small build-time patches:
+Built by `.github/workflows/build-opendots.yml` from upstream + three small build-time patches:
 
 - Upstream: https://github.com/CopilotKit/OpenDots (MIT)
 - Pinned commit: `c2569bb6a13a22e565cf3eb791c62267d06babb1` ("feat: add Parallel search and extraction to research", Oct 2 2026)
-- Build: `mozart-opendots/docker/Dockerfile` (build stage mirrors upstream with one added patch step; runtime stage
+- Build: `mozart-opendots/docker/Dockerfile` (build stage mirrors upstream with added patch steps (OpenCode
+  header + computers endpoint); runtime stage
   adds `entrypoint.sh`), platform linux/amd64
-- Published: `ghcr.io/deusmozart/mozart-opendots:1.0.2`
+- Published: `ghcr.io/deusmozart/mozart-opendots:1.0.3`
 - Icon: upstream `public/favicon.svg`
 
 ## Why the entrypoint patch (1.0.1)
@@ -27,6 +28,18 @@ both model call sites (`src/server/dot-agent.ts` → TanStack adapter `defaultHe
 The patch script fails the build loudly if its anchors no longer match — re-validate on every
 upstream commit bump.
 
+## Why the computers patch (1.0.3)
+Per-Dot computers are served by an OpenBot supervisor (pinned `b6932d31`), deployed separately from this
+app — on the ubuntu-server VM at `10.203.0.2`, not on the umbrel, so the Docker socket a supervisor must
+hold stays off the household box (only the supervisor holds it; computers never do). In that split
+topology the supervisor returns computer URLs on its own host (`http://10.203.0.2:<port>`), which
+upstream's endpoint check rejects (it accepts only a shared-network container name, or loopback when the
+supervisor itself is on loopback). `docker/apply-computers-patch.mjs` widens the check to accept exactly
+the supervisor's own hostname; single-host behaviour is unchanged and any other host is still rejected.
+Enabled by setting `COMPUTER_SUPERVISOR_URL`, `COMPUTER_SUPERVISOR_TOKEN`, `COMPUTER_TOKEN` (and
+optionally `COMPUTER_NAMESPACE`) in the app's environment; off until then. The supervisor side lives in
+`~/opendots-computers` on the VM (see its README there).
+
 ## Why `${APP_PASSWORD}` is the owner token
 `src/server/index.ts` refuses to bind an external HOST without `OWNER_TOKEN` (≥24 chars), so the
 container cannot start with `HOST=0.0.0.0` unless a token is set. Umbrel derives `$APP_PASSWORD`
@@ -41,15 +54,17 @@ password Umbrel already shows them; no manual env editing needed for access.
   rewriting Host would `APP_ORIGIN=http://umbrel.local:4310` become necessary.
 - Voice needs a secure context (HTTPS) for the microphone; it will not work over plain
   `http://umbrel.local` LAN access.
-- Computer tools are intentionally NOT enabled: they require OpenBot's supervisor with the Docker
-  socket mounted, which reaches every umbrel app plus the Hermes VM. Enable deliberately, not by default.
+- Computer tools stay off unless `COMPUTER_*` env is set. The supervisor intentionally runs on the VM
+  (not on umbrel): the umbrel arrangement would mount umbrel's Docker socket (reaching every app), which
+  is rejected for the household box. On the VM only the supervisor holds a Docker socket; computers do not.
 - Data: SQLite at `/data/opendots.sqlite` inside `/Apps/mozart-opendots/data` (internal SSD).
 
 ## Updating
 1. Bump the pinned `ref:` in the workflow to the new upstream commit.
 2. Bump the image tag in the workflow AND in `docker-compose.yml` (keep the `docker/` path trigger in mind).
 3. Bump `version:` in `umbrel-app.yml` + add release notes.
-4. Re-run `node docker/apply-opencode-patch.mjs` against the new commit's checkout to confirm the
-   anchors still match before pushing (it must patch both files exactly once).
+4. Re-run both patch scripts (`node docker/apply-opencode-patch.mjs` and
+   `node docker/apply-computers-patch.mjs`) against the new commit's checkout to confirm the anchors
+   still match before pushing (each must patch exactly once).
 5. Push → wait for the Actions build (`gh run watch`) → verify the GHCR manifest is anonymously
    pullable → `update_app('mozart-opendots')` via the umbrel MCP, then poll `get_app_status` to `ready`.
