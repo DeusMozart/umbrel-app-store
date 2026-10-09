@@ -1,0 +1,35 @@
+manifestVersion: 1.1
+id: mozart-kingshot-redeemer
+category: social
+name: Kingshot Redeemer
+version: "1.1.0"
+tagline: Redeem Kingshot gift codes for your whole alliance in one command
+description: >-
+  A Discord bot that redeems Kingshot gift codes for every registered player at once, so nobody in your alliance has to enter codes by hand.
+
+  • /redeem <code> — redeem for all registered players (or a single player with an optional ID).
+  • /add and /remove — manage players by their Kingshot ID or nickname.
+  • /list and /find — browse and search the roster.
+  • /setup — pick the channel and admin role allowed to use the bot.
+  • Player names sync automatically from the redemption site.
+
+  Redemption runs against the official gift-code site (ks-giftcode.centurygame.com) with a headless browser, so a full-alliance redeem takes a couple of minutes.
+
+  Add your Discord bot token under Settings → Advanced → environment variables (service "bot"). Based on JareCoder/KingshotRedeemer (MIT), pinned to commit fa1d9dd. This build adds a startup guard that waits for the token instead of restarting in a loop, and a small read-only status page.
+developer: DeusMozart
+website: https://github.com/JareCoder/KingshotRedeemer
+submitter: DeusMozart
+submission: https://github.com/DeusMozart/umbrel-app-store
+repo: https://github.com/DeusMozart/umbrel-app-store
+support: https://github.com/DeusMozart/umbrel-app-store/issues
+gallery: []
+releaseNotes: >-
+  First release: packaged from upstream v1.1.0 (commit fa1d9dd). Bulk /redeem on the official gift-code site, player management with /add, /remove, /list and /find, /setup for channel and admin role, and automatic player-name sync. This build adds a startup guard for the not-yet-configured token and a read-only status page showing connection state and registered players.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+port: 8098
+icon: https://raw.githubusercontent.com/DeusMozart/umbrel-app-store/main/kingshot-redeemer/icon.svg
+storage:
+  dataRoot: data

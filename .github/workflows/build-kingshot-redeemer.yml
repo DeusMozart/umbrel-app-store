@@ -1,0 +1,47 @@
+name: Build Kingshot Redeemer image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "kingshot-redeemer/docker/**"
+      - ".github/workflows/build-kingshot-redeemer.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout store repo
+        uses: actions/checkout@v4
+      - name: Checkout KingshotRedeemer (pinned commit)
+        uses: actions/checkout@v4
+        with:
+          repository: JareCoder/KingshotRedeemer
+          ref: fa1d9ddbbe6eb6b9ce705896856c9b63673f95bd
+          path: src
+      - name: Prepare build context
+        # The upstream .dockerignore applies (excludes .git/, data/, secrets).
+        run: cp -r kingshot-redeemer/docker src/.kingshot-docker
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src
+          file: ./src/.kingshot-docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/deusmozart/kingshot-redeemer:1.1.0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

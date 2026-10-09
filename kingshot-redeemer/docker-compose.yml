@@ -1,0 +1,27 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      # Format: <app-id>_<docker-service-name>_1
+      APP_HOST: mozart-kingshot-redeemer_bot_1
+      APP_PORT: 8098
+
+  # The Discord redeemer bot + its small read-only status page.
+  #
+  # Secrets are NOT in this file. Set them in the umbrelOS UI under
+  # Settings -> Advanced -> environment variables (service "bot"):
+  #   DISCORD_TOKEN — bot token from the Discord Developer Portal
+  # Optional:
+  #   TIMEOUT_MS — browser automation timeout in milliseconds (default 500)
+  bot:
+    image: ghcr.io/deusmozart/kingshot-redeemer:1.1.0
+    restart: unless-stopped
+    init: true
+    shm_size: "256mb"
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    environment:
+      - TIMEOUT_MS=500
+      - STATUS_PORT=8098
+      - PYTHONUNBUFFERED=1

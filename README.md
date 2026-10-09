@@ -34,6 +34,12 @@ A tiny nginx server for previewing static sites — HTML mockups, prototypes and
 
 Drop files into its data folder (directory listing included), or set `PREVIEW_FETCH_URL` to a `.tar.gz` and it pulls and unpacks the site on every start. No login required.
 
+### Kingshot Redeemer
+
+A Discord bot that redeems Kingshot gift codes for a whole alliance in one command — [JareCoder/KingshotRedeemer](https://github.com/JareCoder/KingshotRedeemer), pinned to commit `fa1d9dd`.
+
+Redeem for every registered player with `/redeem <code>`, manage the roster with `/add`, `/remove`, `/list` and `/find`, and configure the channel and admin role with `/setup`. Add your Discord bot token in the app's settings; a small read-only status page shows the bot's connection state and registered players.
+
 ## Install
 
 1. Open **App Store** on your Umbrel
