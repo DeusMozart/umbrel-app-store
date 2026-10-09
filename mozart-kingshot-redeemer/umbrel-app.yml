@@ -30,6 +30,6 @@ path: ""
 defaultUsername: ""
 defaultPassword: ""
 port: 8098
-icon: https://raw.githubusercontent.com/DeusMozart/umbrel-app-store/main/kingshot-redeemer/icon.svg
+icon: https://raw.githubusercontent.com/DeusMozart/umbrel-app-store/main/mozart-kingshot-redeemer/icon.svg
 storage:
   dataRoot: data

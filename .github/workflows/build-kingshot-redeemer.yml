@@ -5,7 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "kingshot-redeemer/docker/**"
+      - "mozart-kingshot-redeemer/docker/**"
       - ".github/workflows/build-kingshot-redeemer.yml"
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
           path: src
       - name: Prepare build context
         # The upstream .dockerignore applies (excludes .git/, data/, secrets).
-        run: cp -r kingshot-redeemer/docker src/.kingshot-docker
+        run: cp -r mozart-kingshot-redeemer/docker src/.kingshot-docker
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
