@@ -16,6 +16,7 @@ environment variables (Settings -> Advanced -> environment variables):
     QUIET_HOURS        e.g. "1-8" or "22-6"; "off" (default) disables
     LOG_LEVEL          default INFO
     MNEMO_ENABLED      "0" disables the Mnemosyne long-term memory (default: on)
+    BRAIN_LLM          "off" makes the memory brain skip LLM summaries (default: on)
 
 Commands: /summarize /summary /catchup /chime /persona /memory /brain /botstatus
 """
@@ -44,7 +45,7 @@ import discord
 import httpx
 from discord import app_commands
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 CSRF_TOKEN = uuid.uuid4().hex[:24]  # guards dashboard POSTs; rotates on restart
 LOG = logging.getLogger("bot")
 
@@ -72,6 +73,17 @@ MNEMO_MIN_SCORE = 0.3                              # recall relevance floor
 MNEMO_RECALL_LIMIT = 6                             # memories injected per prompt
 MNEMO_SLEEP_MIN = 40                               # consolidate once this many wait
 MNEMO_SLEEP_GAP = 6 * 3600                         # ...and at most every 6 hours
+BRAIN_LLM = env("BRAIN_LLM", "on").lower() not in ("0", "false", "off", "no")
+# The mnemosyne summarizer the brain relies on expects an on-device GGUF that
+# this image does not ship; without a host LLM its sleep() silently degrades to
+# AAAK compression (logged as "llm_available=False"). Route consolidation through
+# the bot's own LLM instead: env is set before mnemosyne is ever imported, and
+# the matching backend is registered in _mnemo().
+if MNEMO_ENABLED and BRAIN_LLM:
+    os.environ.setdefault("MNEMOSYNE_HOST_LLM_ENABLED", "true")
+    os.environ.setdefault("MNEMOSYNE_HOST_LLM_TIMEOUT", "60")
+    # No review pipeline for canonical model proposals here; skip that phase.
+    os.environ.setdefault("MNEMOSYNE_SLEEP_MODEL_REFRESH_ENABLED", "false")
 
 MOODS: dict[str, dict] = {
     # chance: probability a full batch gets evaluated
@@ -82,7 +94,7 @@ MOODS: dict[str, dict] = {
     "normal": {"chance": 0.45, "batch": 6,  "cooldown": 12 * 60, "daily": 8},
     "chatty": {"chance": 0.60, "batch": 5,  "cooldown": 6 * 60,  "daily": 15},
 }
-MENTION_COOLDOWN = 15          # seconds between mention-triggered replies
+MENTION_COOLDOWN = 10          # seconds between mention replies per channel
 EVAL_MIN_GAP = 300             # seconds between chime evaluations per channel
 KEEP_DAYS = 7                  # message retention for chime context
 KEEP_PER_CHANNEL = 4000        # hard cap of stored messages per channel
@@ -310,6 +322,8 @@ class State:
         self.last_bot_msg: dict[str, float] = {}  # cid -> ts of last bot message
         self.last_eval: dict[str, float] = {}     # cid -> ts of last chime evaluation
         self.last_mention: dict[str, float] = {}
+        self.mention_pending: dict[str, tuple] = {}   # cid -> newest deferred (msg, reply_to)
+        self.mention_tasks: dict[str, asyncio.Task] = {}
         self.daily: dict[str, list] = {}          # cid -> [date, count]
         self.chime_ids: set[str] = set()
         self.messages_seen = 0
@@ -518,6 +532,14 @@ def clean_reply(text: str) -> str:
     return text[:480]
 
 
+def _trim_cut_reply(text: str) -> str:
+    """A reply cut off at the token ceiling: end it at the last whole word."""
+    cut = text.rfind(" ")
+    if cut >= 24:
+        text = text[:cut]
+    return text.rstrip(" ,;:").strip()
+
+
 def allowed(interaction: discord.Interaction) -> bool:
     return bool(interaction.guild and interaction.user
                 and getattr(interaction.user, "guild_permissions", None)
@@ -538,6 +560,52 @@ class LLMError(Exception):
 
 
 _reasoning_rejected: set = set()  # models that refused reasoning_effort:none
+
+
+class _BrainLLM:
+    """Host LLM adapter for mnemosyne's sleep-time consolidation.
+
+    Sleep runs in worker threads (asyncio.to_thread), so this is synchronous.
+    Uses the live dashboard/LLM settings plus the headers this endpoint needs.
+    """
+
+    def complete(self, prompt: str, *, max_tokens: int = 1024,
+                 temperature: float = 0.3, timeout: float = 60.0,
+                 provider=None, model=None) -> str | None:
+        base, configured_model, key = llm_settings()
+        if not key or not base:
+            return None
+        budget = max_tokens
+        for attempt in (1, 2):
+            headers = {"Authorization": f"Bearer {key}"}
+            payload = {
+                "model": configured_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": budget,
+                "temperature": temperature,
+            }
+            if "opencode" in base:
+                headers["x-opencode-session"] = f"discord-brain-{uuid.uuid4().hex[:12]}"
+                if not reasoning_enabled() and configured_model not in _reasoning_rejected:
+                    payload["reasoning_effort"] = "none"
+            try:
+                resp = httpx.post(f"{base}/chat/completions", headers=headers,
+                                  json=payload, timeout=timeout)
+            except httpx.HTTPError:
+                return None
+            if resp.status_code != 200:
+                if resp.status_code == 400 and "reasoning_effort" in payload:
+                    _reasoning_rejected.add(configured_model)
+                    continue  # model refuses the flag; retry without it
+                return None
+            try:
+                text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+            except Exception:  # noqa: BLE001
+                return None
+            if text:
+                return text
+            budget = budget * 2 + 256  # reasoning tokens can eat the budget
+        return None
 
 
 async def llm_chat(system: str, user: str, max_tokens: int = 350,
@@ -605,19 +673,35 @@ async def llm_chat(system: str, user: str, max_tokens: int = 350,
             state.llm_last_error = f"HTTP {resp.status_code}: {resp.text[:160]}"
             raise LLMError(f"LLM endpoint returned HTTP {resp.status_code}: {resp.text[:160]}")
         try:
-            text = resp.json()["choices"][0]["message"]["content"]
+            choice = resp.json()["choices"][0]
+            text = choice["message"]["content"]
+            finish = choice.get("finish_reason")
         except Exception as e:
             state.llm_last_error = f"unexpected response: {str(resp.text)[:160]}"
             raise LLMError(f"Unexpected LLM response: {str(resp.text)[:160]}") from e
         text = (text or "").strip()
+        if text and finish == "length" and attempts < 3:
+            # A generation cut at the token ceiling is as unusable as an
+            # empty one -- users see it as mid-word garbage ("bump it to
+            # 4. s"). Reasoning tokens can quietly eat most of the budget,
+            # so retry with compounding headroom.
+            payload["max_tokens"] = payload["max_tokens"] * 2 + 256
+            state.llm_last_error = "reply hit the token limit (retrying)"
+            LOG.debug("llm: finish_reason=length, retrying with max_tokens=%s",
+                      payload["max_tokens"])
+            continue
         if text:
-            state.llm_last_error = ""
+            if finish == "length":
+                text = _trim_cut_reply(text)
+                state.llm_last_error = "reply was trimmed at the token limit"
+            else:
+                state.llm_last_error = ""
             return text
         if attempts == 1:
             # Reasoning models (e.g. deepseek-v4.1-flash) count hidden reasoning
             # tokens against max_tokens and can burn the whole budget before
             # emitting content \u2014 retry once with generous headroom.
-            payload["max_tokens"] = max_tokens * 2 + 256
+            payload["max_tokens"] = payload["max_tokens"] * 2 + 256
             continue
         state.llm_last_error = "empty reply from LLM"
         raise LLMError("The LLM returned an empty reply.")
@@ -699,7 +783,10 @@ def _mnemo(guild_id):
     if inst is not None:
         return inst
     try:
+        from mnemosyne.core import llm_backends
         from mnemosyne.core.memory import Mnemosyne
+        if BRAIN_LLM and llm_backends.get_host_llm_backend() is None:
+            llm_backends.set_host_llm_backend(_BrainLLM())
         os.makedirs(MNEMO_DIR, exist_ok=True)
         inst = Mnemosyne(session_id=f"discord_{gid}",
                          db_path=Path(MNEMO_DIR) / f"guild_{gid}.db")
@@ -933,7 +1020,9 @@ async def snapshot_loop():
         except Exception as e:  # noqa: BLE001
             LOG.debug("snapshot error: %s", e)
         try:
-            brain_maintenance()
+            # Off the event loop: with a host LLM wired in, consolidation
+            # can take a while and must not stall Discord heartbeats.
+            await asyncio.to_thread(brain_maintenance)
         except Exception as e:  # noqa: BLE001
             LOG.debug("brain maintenance error: %s", e)
         await asyncio.sleep(15)
@@ -985,8 +1074,43 @@ async def handle_mention(message: discord.Message, replied_to=None):
     cid = str(message.channel.id)
     now = time.time()
     if now - state.last_mention.get(cid, 0) < MENTION_COOLDOWN:
+        # Burst control: never silently drop a mention. Keep only the newest
+        # deferred one and answer it once the cooldown clears; a reply a few
+        # seconds late reads far better than being ignored.
+        state.mention_pending[cid] = (message, replied_to)
+        task = state.mention_tasks.get(cid)
+        if task is None or task.done():
+            state.mention_tasks[cid] = asyncio.create_task(_drain_mentions(cid))
         return
-    state.last_mention[cid] = now
+    await _reply_mention(message, replied_to)
+
+
+async def _drain_mentions(cid: str):
+    """Deliver the newest deferred mention once the per-channel cooldown clears."""
+    try:
+        while True:
+            pending = state.mention_pending.pop(cid, None)
+            if pending is None:
+                break
+            wait = MENTION_COOLDOWN - (time.time() - state.last_mention.get(cid, 0))
+            if wait > 0:
+                await asyncio.sleep(wait)
+            latest = state.mention_pending.pop(cid, None)
+            if latest is not None:
+                pending = latest  # a newer mention arrived while waiting
+            message, replied_to = pending
+            LOG.debug("mention: answering deferred mention on #%s",
+                      getattr(message.channel, "name", "?"))
+            await _reply_mention(message, replied_to)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("deferred mention failed: %s", e)
+    finally:
+        state.mention_tasks.pop(cid, None)
+
+
+async def _reply_mention(message: discord.Message, replied_to=None):
+    cid = str(message.channel.id)
+    state.last_mention[cid] = time.time()
 
     rows = []
     try:
@@ -1529,12 +1653,17 @@ async def brain_cmd_sleep(interaction: discord.Interaction):
         await deny(interaction)
         return
     await interaction.response.defer(thinking=True)
-    m = _mnemo(str(interaction.guild.id))
-    if m is None:
-        await interaction.followup.send("Long-term memory isn't available right now.")
-        return
+    gid = str(interaction.guild.id)
+
+    def _consolidate():
+        mm = _mnemo(gid)  # instance must be created inside the worker thread
+        return mm.sleep() if mm is not None else None
+
     try:
-        out = m.sleep() or {}
+        out = await asyncio.to_thread(_consolidate)
+        if out is None:
+            await interaction.followup.send("Long-term memory isn't available right now.")
+            return
         msg = str(out.get("message") or out.get("status") or "done")
     except Exception as e:  # noqa: BLE001
         msg = f"Consolidation failed: {type(e).__name__}: {e}"
